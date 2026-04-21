@@ -39,6 +39,8 @@ const { adapt }  = require('./src/scannerAdapter');
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 const CONFIG = {
   TELEGRAM_TOKEN  : process.env.TELEGRAM_TOKEN ?? 'YOUR_BOT_TOKEN_HERE',
+  CHANNEL_ID      : process.env.CHANNEL_ID     ?? null,
+  BOT_USERNAME    : process.env.BOT_USERNAME   ?? 'cryptodailytrading_bot',
   SCAN_INTERVAL_MS: 5 * 60 * 1000,
   BINANCE_HOSTS   : [
     'https://data-api.binance.vision',
@@ -46,6 +48,9 @@ const CONFIG = {
     'https://api3.binance.com',
   ],
 };
+
+// Channel ID can also be set at runtime via /setchannel
+let channelId = CONFIG.CHANNEL_ID;
 
 // ─── BOT INIT ─────────────────────────────────────────────────────────────────
 const bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN, { polling: true });
@@ -407,6 +412,22 @@ bot.onText(/\/testsignal(?:\s+(\S+))?/, async (msg, match) => {
   await broadcastSignal(adapt(rawSignal));
 });
 
+// ─── /setchannel — register channel from inside it ───────────────────────────
+
+bot.on('channel_post', async (msg) => {
+  if (msg.text === '/setchannel') {
+    channelId = String(msg.chat.id);
+    console.log(`[Channel] Registered channel: ${channelId} (${msg.chat.title})`);
+    await bot.sendMessage(channelId,
+      `✅ *Channel registered!*\n\n` +
+      `Signals will now be posted here automatically.\n\n` +
+      `To make this permanent after a restart, add this to Railway Variables:\n` +
+      `\`CHANNEL_ID = ${channelId}\``,
+      { parse_mode: 'Markdown' }
+    );
+  }
+});
+
 // ─── /help ────────────────────────────────────────────────────────────────────
 
 bot.onText(/\/help/, async (msg) => {
@@ -431,6 +452,8 @@ bot.onText(/\/help/, async (msg) => {
     ` /resume — resume alerts\n\n` +
     `*Market Intel:*\n` +
     ` /sectors — sector rotation (where money is flowing)\n\n` +
+    `*Admin:*\n` +
+    ` /setchannel — post this in your channel to register it for broadcasts\n\n` +
     `*Dev / Testing:*\n` +
     ` /testsignal — fire a test signal to check formatting\n` +
     ` /testsignal BTCUSDT — test with a specific coin\n\n` +
@@ -812,6 +835,16 @@ async function broadcastSignal(scannerResult) {
       Promise.resolve(sector.buildRotationLine(scannerResult.symbol)),
     ]);
     const extras = { newsSummary, rotationLine };
+
+    // Post to channel first (shared, no personal sizes)
+    if (channelId) {
+      try {
+        const channelPost = bridge.buildChannelPost(scannerResult, extras, CONFIG.BOT_USERNAME);
+        await bot.sendMessage(channelId, channelPost.text, { parse_mode: 'Markdown' });
+      } catch (e) {
+        console.error('[Channel]', e.message);
+      }
+    }
 
     const recipients = bridge.getEligibleUsers(scannerResult);
     for (const { userId, isWatched, alertType } of recipients) {
