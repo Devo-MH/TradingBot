@@ -61,10 +61,12 @@ console.log('[Config] WEBHOOK_URL:', CONFIG.WEBHOOK_URL ?? 'none (polling mode)'
 
 let bot;
 if (CONFIG.WEBHOOK_URL) {
-  // Webhook mode — used on Railway where polling is blocked
-  bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN, { webHook: { port: CONFIG.PORT } });
+  // Webhook mode — Railway injects PORT automatically
+  const webhookPort = CONFIG.PORT;
+  console.log('[Config] Webhook port:', webhookPort);
+  bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN, { webHook: { port: webhookPort, host: '0.0.0.0' } });
   bot.setWebHook(`${CONFIG.WEBHOOK_URL}/bot${CONFIG.TELEGRAM_TOKEN}`)
-    .then(() => console.log('[Bot] Webhook set:', CONFIG.WEBHOOK_URL))
+    .then(() => console.log('[Bot] Webhook set on port', webhookPort))
     .catch(e => console.error('[Bot] Webhook error:', e.message));
 } else {
   // Polling mode — used locally
