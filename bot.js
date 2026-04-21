@@ -55,11 +55,7 @@ let channelId = CONFIG.CHANNEL_ID;
 // ─── BOT INIT ─────────────────────────────────────────────────────────────────
 console.log('[Config] TOKEN prefix:', CONFIG.TELEGRAM_TOKEN?.substring(0, 15));
 console.log('[Config] CHANNEL_ID:', CONFIG.CHANNEL_ID);
-const bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN, {
-  polling: {
-    params: { allowed_updates: ['message', 'callback_query', 'channel_post'] },
-  },
-});
+const bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN, { polling: true });
 
 // ─── CONVERSATION STATE ───────────────────────────────────────────────────────
 // Tracks multi-step conversations per user (entry flow, custom price input, etc.)
