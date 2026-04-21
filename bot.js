@@ -41,6 +41,8 @@ const CONFIG = {
   TELEGRAM_TOKEN  : process.env.TELEGRAM_TOKEN ?? 'YOUR_BOT_TOKEN_HERE',
   CHANNEL_ID      : process.env.CHANNEL_ID     ?? null,
   BOT_USERNAME    : process.env.BOT_USERNAME   ?? 'cryptodailytrading_bot',
+  WEBHOOK_URL     : process.env.WEBHOOK_URL    ?? null,
+  PORT            : parseInt(process.env.PORT  ?? '3000'),
   SCAN_INTERVAL_MS: 5 * 60 * 1000,
   BINANCE_HOSTS   : [
     'https://data-api.binance.vision',
@@ -55,7 +57,19 @@ let channelId = CONFIG.CHANNEL_ID;
 // ─── BOT INIT ─────────────────────────────────────────────────────────────────
 console.log('[Config] TOKEN prefix:', CONFIG.TELEGRAM_TOKEN?.substring(0, 15));
 console.log('[Config] CHANNEL_ID:', CONFIG.CHANNEL_ID);
-const bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN, { polling: true });
+console.log('[Config] WEBHOOK_URL:', CONFIG.WEBHOOK_URL ?? 'none (polling mode)');
+
+let bot;
+if (CONFIG.WEBHOOK_URL) {
+  // Webhook mode — used on Railway where polling is blocked
+  bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN, { webHook: { port: CONFIG.PORT } });
+  bot.setWebHook(`${CONFIG.WEBHOOK_URL}/bot${CONFIG.TELEGRAM_TOKEN}`)
+    .then(() => console.log('[Bot] Webhook set:', CONFIG.WEBHOOK_URL))
+    .catch(e => console.error('[Bot] Webhook error:', e.message));
+} else {
+  // Polling mode — used locally
+  bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN, { polling: true });
+}
 
 // ─── CONVERSATION STATE ───────────────────────────────────────────────────────
 // Tracks multi-step conversations per user (entry flow, custom price input, etc.)
