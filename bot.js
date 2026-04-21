@@ -41,7 +41,9 @@ const CONFIG = {
   TELEGRAM_TOKEN  : process.env.TELEGRAM_TOKEN ?? 'YOUR_BOT_TOKEN_HERE',
   CHANNEL_ID      : process.env.CHANNEL_ID     ?? null,
   BOT_USERNAME    : process.env.BOT_USERNAME   ?? 'cryptodailytrading_bot',
-  WEBHOOK_URL     : process.env.WEBHOOK_URL    ?? null,
+  WEBHOOK_URL     : process.env.WEBHOOK_URL
+    ? (process.env.WEBHOOK_URL.startsWith('https://') ? process.env.WEBHOOK_URL : `https://${process.env.WEBHOOK_URL}`)
+    : null,
   PORT            : parseInt(process.env.PORT  ?? '3000'),
   SCAN_INTERVAL_MS: 5 * 60 * 1000,
   BINANCE_HOSTS   : [
