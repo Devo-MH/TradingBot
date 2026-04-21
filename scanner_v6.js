@@ -3602,3 +3602,5 @@ _Scan every 5 min | Top 200 pairs_`
     setInterval(scan, CONFIG.SCAN_INTERVAL_MS);
     setInterval(reviewTrackedPositions, CONFIG.TRACKER_REVIEW_MS);
 });
+
+module.exports = { broadcastSignal: forwardSignal };

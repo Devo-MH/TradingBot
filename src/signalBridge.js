@@ -724,61 +724,6 @@ function _checkCapacity(userId, snapshot) {
   return { allowed: true, reason: 'OK' };
 }
 
-// ─── CHANNEL POST (no personal sizes — shared broadcast) ─────────────────────
-
-/**
- * Clean signal card for a Telegram channel.
- * No personal position sizes — those are in each user's private DM.
- * Ends with a CTA to DM the bot.
- */
-function buildChannelPost(r, extras = {}, botUsername = 'cryptodailytrading_bot') {
-  const iScore    = r.instGrade?.iScore ?? 50;
-  const grade     = scoreToGrade(iScore);
-  const verdict   = r._instLayer?.verdict?.verdict ?? 'WATCH';
-  const verdictEmoji = { HIGH_CONVICTION: '🔥', BUY: '✅', WATCH: '👁', WAIT: '⏳', AVOID: '🚫' }[verdict] ?? '⚪';
-
-  const iRow    = buildIndicatorRow(r);
-  const dRow    = buildDepthRow(r);
-  const cvdLine = buildCVDLine(r);
-  const obWarn  = buildOBWarning(r);
-
-  const session = r.session ?? r.instGrade?.session ?? '';
-  const sessionEmoji = { EUROPE: '🌍', US: '🇺🇸', ASIA: '🌏' }[session] ?? '';
-
-  const tp1Pct  = r.tp1      ? `+${((r.tp1      - r.entry) / r.entry * 100).toFixed(0)}%` : '';
-  const tp2Pct  = r.tp2      ? `+${((r.tp2      - r.entry) / r.entry * 100).toFixed(0)}%` : '';
-  const moonPct = r.moonPrice ? `+${((r.moonPrice - r.entry) / r.entry * 100).toFixed(0)}%` : '';
-  const slPct   = r.sl       ? `-${((r.entry    - r.sl)    / r.entry * 100).toFixed(1)}%` : '';
-
-  const whyLines = buildWhySummary(r).map(l => ` · ${l}`).join('\n');
-
-  const isAccum = isAccumulationSetup(r);
-
-  const text = [
-    obWarn,
-    isAccum
-      ? `👁 *ACCUMULATION WATCH — ${r.symbol}*`
-      : `${verdictEmoji} *${classificationLabel(r.classification)} — ${r.symbol}*`,
-    `\`@${fmtPrice(r.entry)}\`  |  Grade *${grade}*  |  Score ${iScore}/100${session ? `  |  ${sessionEmoji} ${session}` : ''}`,
-    ``,
-    iRow    ? `📊  ${iRow}` : null,
-    dRow    ? `💧  ${dRow}` : null,
-    cvdLine,
-    ``,
-    r.sl && r.tp1
-      ? `🎯  SL: \`${fmtPrice(r.sl)}\` *(${slPct})*  TP1: \`${fmtPrice(r.tp1)}\` *(${tp1Pct})*  TP2: \`${fmtPrice(r.tp2)}\` *(${tp2Pct})*  🌕 \`${fmtPrice(r.moonPrice)}\` *(${moonPct})*`
-      : null,
-    whyLines ? `\n${whyLines}` : null,
-    ``,
-    extras.newsSummary  || null,
-    extras.rotationLine || null,
-    ``,
-    `💬 _DM @${botUsername} for your personal position size_`,
-  ].filter(l => l !== null).join('\n');
-
-  return { text };
-}
-
 // ─── EXPORTS ─────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -786,7 +731,6 @@ module.exports = {
   isAccumulationSetup,
   buildSignalAlert,
   buildAccumulationAlert,
-  buildChannelPost,
   buildEntryPlan,
   buildTP1Alert,
   buildWeakeningAlert,

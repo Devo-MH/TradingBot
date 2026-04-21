@@ -22,8 +22,6 @@
  *   node scanner_v6.js
  */
 
-require('dotenv').config();
-
 const path = require('path');
 const fs   = require('fs');
 

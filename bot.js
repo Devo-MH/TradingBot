@@ -38,13 +38,7 @@ const { adapt }  = require('./src/scannerAdapter');
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 const CONFIG = {
-  TELEGRAM_TOKEN  : process.env.TELEGRAM_TOKEN ?? 'YOUR_BOT_TOKEN_HERE',
-  CHANNEL_ID      : process.env.CHANNEL_ID     ?? null,
-  BOT_USERNAME    : process.env.BOT_USERNAME   ?? 'cryptodailytrading_bot',
-  WEBHOOK_URL     : process.env.WEBHOOK_URL
-    ? (process.env.WEBHOOK_URL.startsWith('https://') ? process.env.WEBHOOK_URL : `https://${process.env.WEBHOOK_URL}`)
-    : null,
-  PORT            : parseInt(process.env.PORT  ?? '3000'),
+  TELEGRAM_TOKEN  : process.env.TELEGRAM_TOKEN ?? process.env.BOT_TOKEN ?? 'YOUR_BOT_TOKEN_HERE',
   SCAN_INTERVAL_MS: 5 * 60 * 1000,
   BINANCE_HOSTS   : [
     'https://data-api.binance.vision',
@@ -53,44 +47,8 @@ const CONFIG = {
   ],
 };
 
-// Channel ID can also be set at runtime via /setchannel
-let channelId = CONFIG.CHANNEL_ID;
-
 // ─── BOT INIT ─────────────────────────────────────────────────────────────────
-console.log('[Config] TOKEN prefix:', CONFIG.TELEGRAM_TOKEN?.substring(0, 15));
-console.log('[Config] CHANNEL_ID:', CONFIG.CHANNEL_ID);
-console.log('[Config] WEBHOOK_URL:', CONFIG.WEBHOOK_URL ?? 'none (polling mode)');
-
-let bot;
-if (CONFIG.WEBHOOK_URL) {
-  // Webhook mode — simple HTTP server, bypasses node-telegram-bot-api's secret validation
-  const http = require('http');
-  bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN);
-  const webhookPath = `/bot${CONFIG.TELEGRAM_TOKEN}`;
-  const server = http.createServer((req, res) => {
-    if (req.method === 'POST') {
-      let body = '';
-      req.on('data', chunk => { body += chunk; });
-      req.on('end', () => {
-        try { bot.processUpdate(JSON.parse(body)); } catch {}
-        res.writeHead(200);
-        res.end('OK');
-      });
-    } else {
-      res.writeHead(200);
-      res.end('TradingBot online');
-    }
-  });
-  server.listen(CONFIG.PORT, '0.0.0.0', () => {
-    console.log('[Bot] Webhook server listening on port', CONFIG.PORT);
-    bot.setWebHook(`${CONFIG.WEBHOOK_URL}/bot${CONFIG.TELEGRAM_TOKEN}`)
-      .then(() => console.log('[Bot] Webhook registered:', CONFIG.WEBHOOK_URL))
-      .catch(e => console.error('[Bot] setWebhook error:', e.message));
-  });
-} else {
-  // Polling mode — used locally
-  bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN, { polling: true });
-}
+const bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN, { polling: true });
 
 // ─── CONVERSATION STATE ───────────────────────────────────────────────────────
 // Tracks multi-step conversations per user (entry flow, custom price input, etc.)
@@ -449,34 +407,6 @@ bot.onText(/\/testsignal(?:\s+(\S+))?/, async (msg, match) => {
   await broadcastSignal(adapt(rawSignal));
 });
 
-// ─── /setchannel — register channel via DM ───────────────────────────────────
-
-bot.onText(/\/setchannel(?:\s+(-?\d+))?/, async (msg, match) => {
-  const uid = msg.chat.id;
-  const provided = match?.[1];
-
-  if (provided) {
-    channelId = provided;
-    console.log(`[Channel] Registered channel: ${channelId}`);
-    await send(uid,
-      `✅ *Channel registered!*\n\n` +
-      `ID: \`${channelId}\`\n` +
-      `Signals will now be posted there automatically.\n\n` +
-      `To make this permanent on Railway, add this to Variables:\n` +
-      `\`CHANNEL_ID = ${channelId}\``
-    );
-  } else {
-    await send(uid,
-      `*How to register your channel:*\n\n` +
-      `1. Forward any message from your channel to @userinfobot\n` +
-      `2. It will reply with the channel ID (starts with -100)\n` +
-      `3. Come back here and send:\n` +
-      `\`/setchannel YOUR_CHANNEL_ID\`\n\n` +
-      `_Example: /setchannel -1001234567890_`
-    );
-  }
-});
-
 // ─── /help ────────────────────────────────────────────────────────────────────
 
 bot.onText(/\/help/, async (msg) => {
@@ -501,8 +431,6 @@ bot.onText(/\/help/, async (msg) => {
     ` /resume — resume alerts\n\n` +
     `*Market Intel:*\n` +
     ` /sectors — sector rotation (where money is flowing)\n\n` +
-    `*Admin:*\n` +
-    ` /setchannel — post this in your channel to register it for broadcasts\n\n` +
     `*Dev / Testing:*\n` +
     ` /testsignal — fire a test signal to check formatting\n` +
     ` /testsignal BTCUSDT — test with a specific coin\n\n` +
@@ -884,16 +812,6 @@ async function broadcastSignal(scannerResult) {
       Promise.resolve(sector.buildRotationLine(scannerResult.symbol)),
     ]);
     const extras = { newsSummary, rotationLine };
-
-    // Post to channel first (shared, no personal sizes)
-    if (channelId) {
-      try {
-        const channelPost = bridge.buildChannelPost(scannerResult, extras, CONFIG.BOT_USERNAME);
-        await bot.sendMessage(channelId, channelPost.text, { parse_mode: 'Markdown' });
-      } catch (e) {
-        console.error('[Channel]', e.message);
-      }
-    }
 
     const recipients = bridge.getEligibleUsers(scannerResult);
     for (const { userId, isWatched, alertType } of recipients) {
