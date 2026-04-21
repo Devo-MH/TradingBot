@@ -37,8 +37,9 @@ const sector     = require('./src/sectorMomentum');
 const { adapt }  = require('./src/scannerAdapter');
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN ?? process.env.BOT_TOKEN;
 const CONFIG = {
-  TELEGRAM_TOKEN  : process.env.TELEGRAM_TOKEN ?? process.env.BOT_TOKEN ?? 'YOUR_BOT_TOKEN_HERE',
+  TELEGRAM_TOKEN  : TELEGRAM_TOKEN ?? 'YOUR_BOT_TOKEN_HERE',
   SCAN_INTERVAL_MS: 5 * 60 * 1000,
   BINANCE_HOSTS   : [
     'https://data-api.binance.vision',
@@ -46,6 +47,12 @@ const CONFIG = {
     'https://api3.binance.com',
   ],
 };
+
+if (!TELEGRAM_TOKEN) {
+  console.error('[Config] Missing TELEGRAM_TOKEN or BOT_TOKEN environment variable');
+  process.exit(1);
+}
+console.log('[Config] TOKEN prefix:', TELEGRAM_TOKEN.substring(0, 15));
 
 // ─── BOT INIT ─────────────────────────────────────────────────────────────────
 const bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN, { polling: true });
