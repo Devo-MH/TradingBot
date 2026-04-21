@@ -426,19 +426,20 @@ bot.onText(/\/setchannel(?:\s+(-?\d+))?/, async (msg, match) => {
     channelId = provided;
     console.log(`[Channel] Registered channel: ${channelId}`);
     await send(uid,
-      `✅ Channel \`${channelId}\` registered\\!\n\n` +
-      `Signals will now be posted there automatically\\.\n\n` +
-      `To make this permanent on Railway, add:\n` +
-      `\`CHANNEL_ID = ${channelId}\``,
+      `✅ *Channel registered!*\n\n` +
+      `ID: \`${channelId}\`\n` +
+      `Signals will now be posted there automatically.\n\n` +
+      `To make this permanent on Railway, add this to Variables:\n` +
+      `\`CHANNEL_ID = ${channelId}\``
     );
   } else {
     await send(uid,
       `*How to register your channel:*\n\n` +
-      `1\\. Forward any message from your channel to @userinfobot\n` +
-      `2\\. It will reply with the channel ID \\(starts with \\-100\\)\n` +
-      `3\\. Come back here and send:\n` +
+      `1. Forward any message from your channel to @userinfobot\n` +
+      `2. It will reply with the channel ID (starts with -100)\n` +
+      `3. Come back here and send:\n` +
       `\`/setchannel YOUR_CHANNEL_ID\`\n\n` +
-      `_Example: /setchannel \\-1001234567890_`
+      `_Example: /setchannel -1001234567890_`
     );
   }
 });
