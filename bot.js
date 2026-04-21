@@ -63,13 +63,30 @@ console.log('[Config] WEBHOOK_URL:', CONFIG.WEBHOOK_URL ?? 'none (polling mode)'
 
 let bot;
 if (CONFIG.WEBHOOK_URL) {
-  // Webhook mode — Railway injects PORT automatically
-  const webhookPort = CONFIG.PORT;
-  console.log('[Config] Webhook port:', webhookPort);
-  bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN, { webHook: { port: webhookPort, host: '0.0.0.0' } });
-  bot.setWebHook(`${CONFIG.WEBHOOK_URL}/bot${CONFIG.TELEGRAM_TOKEN}`)
-    .then(() => console.log('[Bot] Webhook set on port', webhookPort))
-    .catch(e => console.error('[Bot] Webhook error:', e.message));
+  // Webhook mode — simple HTTP server, bypasses node-telegram-bot-api's secret validation
+  const http = require('http');
+  bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN);
+  const webhookPath = `/bot${CONFIG.TELEGRAM_TOKEN}`;
+  const server = http.createServer((req, res) => {
+    if (req.method === 'POST' && req.url === webhookPath) {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        try { bot.processUpdate(JSON.parse(body)); } catch {}
+        res.writeHead(200);
+        res.end('OK');
+      });
+    } else {
+      res.writeHead(200);
+      res.end('TradingBot online');
+    }
+  });
+  server.listen(CONFIG.PORT, '0.0.0.0', () => {
+    console.log('[Bot] Webhook server listening on port', CONFIG.PORT);
+    bot.setWebHook(`${CONFIG.WEBHOOK_URL}/bot${CONFIG.TELEGRAM_TOKEN}`)
+      .then(() => console.log('[Bot] Webhook registered:', CONFIG.WEBHOOK_URL))
+      .catch(e => console.error('[Bot] setWebhook error:', e.message));
+  });
 } else {
   // Polling mode — used locally
   bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN, { polling: true });
