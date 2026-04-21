@@ -416,18 +416,29 @@ bot.onText(/\/testsignal(?:\s+(\S+))?/, async (msg, match) => {
   await broadcastSignal(adapt(rawSignal));
 });
 
-// ─── /setchannel — register channel from inside it ───────────────────────────
+// ─── /setchannel — register channel via DM ───────────────────────────────────
 
-bot.on('channel_post', async (msg) => {
-  if (msg.text === '/setchannel') {
-    channelId = String(msg.chat.id);
-    console.log(`[Channel] Registered channel: ${channelId} (${msg.chat.title})`);
-    await bot.sendMessage(channelId,
-      `✅ *Channel registered!*\n\n` +
-      `Signals will now be posted here automatically.\n\n` +
-      `To make this permanent after a restart, add this to Railway Variables:\n` +
+bot.onText(/\/setchannel(?:\s+(-?\d+))?/, async (msg, match) => {
+  const uid = msg.chat.id;
+  const provided = match?.[1];
+
+  if (provided) {
+    channelId = provided;
+    console.log(`[Channel] Registered channel: ${channelId}`);
+    await send(uid,
+      `✅ Channel \`${channelId}\` registered\\!\n\n` +
+      `Signals will now be posted there automatically\\.\n\n` +
+      `To make this permanent on Railway, add:\n` +
       `\`CHANNEL_ID = ${channelId}\``,
-      { parse_mode: 'Markdown' }
+    );
+  } else {
+    await send(uid,
+      `*How to register your channel:*\n\n` +
+      `1\\. Forward any message from your channel to @userinfobot\n` +
+      `2\\. It will reply with the channel ID \\(starts with \\-100\\)\n` +
+      `3\\. Come back here and send:\n` +
+      `\`/setchannel YOUR_CHANNEL_ID\`\n\n` +
+      `_Example: /setchannel \\-1001234567890_`
     );
   }
 });
