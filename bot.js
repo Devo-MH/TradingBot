@@ -68,7 +68,7 @@ if (CONFIG.WEBHOOK_URL) {
   bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN);
   const webhookPath = `/bot${CONFIG.TELEGRAM_TOKEN}`;
   const server = http.createServer((req, res) => {
-    if (req.method === 'POST' && req.url === webhookPath) {
+    if (req.method === 'POST') {
       let body = '';
       req.on('data', chunk => { body += chunk; });
       req.on('end', () => {
