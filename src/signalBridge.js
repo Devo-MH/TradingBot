@@ -250,6 +250,19 @@ function buildIndicatorRow(r) {
 }
 
 /**
+ * Build the VWAP line — shows 24h VWAP and whether price is above/below.
+ * vwap is passed in via extras after being fetched in broadcastSignal.
+ */
+function buildVWAPLine(r, vwap) {
+  const v = vwap ?? r.fbCheck?.vwap;
+  if (!v || !r.entry) return null;
+  const above = r.entry >= v;
+  const arrow = above ? '▲' : '▼';
+  const label = above ? 'Above VWAP ✅' : 'Below VWAP ⚠️';
+  return `📍 VWAP: \`${fmtPrice(v)}\`  ${arrow} ${label}`;
+}
+
+/**
  * Build the market depth row: OB ratio + absorption + breakout distance.
  */
 function buildDepthRow(r) {
@@ -337,10 +350,11 @@ function buildSignalAlert(r, userId, isWatched = false, extras = {}) {
   const watchedFlag   = isWatched ? ' 👀 *You were watching this!*\n' : '';
   const verdictEmoji  = { HIGH_CONVICTION: '🔥', BUY: '✅', WATCH: '👁', WAIT: '⏳', AVOID: '🚫' }[verdict] ?? '⚪';
 
-  const iRow    = buildIndicatorRow(r);
-  const dRow    = buildDepthRow(r);
-  const cvdLine = buildCVDLine(r);
-  const obWarn  = buildOBWarning(r);
+  const iRow     = buildIndicatorRow(r);
+  const dRow     = buildDepthRow(r);
+  const cvdLine  = buildCVDLine(r);
+  const obWarn   = buildOBWarning(r);
+  const vwapLine = buildVWAPLine(r, extras.vwap);
 
   // Session
   const session = r.session ?? r.instGrade?.session ?? '';
@@ -364,8 +378,9 @@ function buildSignalAlert(r, userId, isWatched = false, extras = {}) {
     watchedFlag,
     `\`@${fmtPrice(r.entry)}\`  |  Grade *${grade}*  |  Score ${iScore}/100${session ? `  |  ${sessionEmoji} ${session}` : ''}`,
     ``,
-    iRow  ? `📊  ${iRow}` : null,
-    dRow  ? `💧  ${dRow}` : null,
+    iRow     ? `📊  ${iRow}` : null,
+    dRow     ? `💧  ${dRow}` : null,
+    vwapLine || null,
     cvdLine,
     ``,
     r.sl && r.tp1
@@ -385,22 +400,24 @@ function buildSignalAlert(r, userId, isWatched = false, extras = {}) {
     ? {
         inline_keyboard: [
           [
-            { text: '⚡ Quick Summary',   callback_data: `sig_quick_${r.symbol}` },
-            { text: '📊 Full Analysis',   callback_data: `sig_full_${r.symbol}`  },
+            { text: '⚡ Quick Summary',   callback_data: `sig_quick_${r.symbol}`   },
+            { text: '📊 Full Analysis',   callback_data: `sig_full_${r.symbol}`    },
           ],
           [
-            { text: '✅ Enter trade',     callback_data: `sig_enter_${r.symbol}` },
-            { text: '👀 Watch it',        callback_data: `sig_watch_${r.symbol}` },
+            { text: '💡 Explain simply',  callback_data: `sig_explain_${r.symbol}` },
+            { text: '👀 Watch it',        callback_data: `sig_watch_${r.symbol}`   },
           ],
           [
-            { text: '❌ Skip',            callback_data: `sig_skip_${r.symbol}`  },
+            { text: '✅ Enter trade',     callback_data: `sig_enter_${r.symbol}`   },
+            { text: '❌ Skip',            callback_data: `sig_skip_${r.symbol}`    },
           ],
         ],
       }
     : {
         inline_keyboard: [[
-          { text: '📊 View Analysis',     callback_data: `sig_full_${r.symbol}`  },
-          { text: '👀 Watch it',          callback_data: `sig_watch_${r.symbol}` },
+          { text: '💡 Explain simply',    callback_data: `sig_explain_${r.symbol}` },
+          { text: '📊 View Analysis',     callback_data: `sig_full_${r.symbol}`    },
+          { text: '👀 Watch it',          callback_data: `sig_watch_${r.symbol}`   },
         ]],
       };
 
@@ -724,6 +741,96 @@ function _checkCapacity(userId, snapshot) {
   return { allowed: true, reason: 'OK' };
 }
 
+// ─── SIMPLE EXPLANATION (for end users) ──────────────────────────────────────
+
+/**
+ * Builds a jargon-free explanation of the signal with a plain recommendation.
+ * Designed for users who don't know technical analysis.
+ */
+function buildExplainMessage(r, extras = {}) {
+  const grade      = scoreToGrade(r.instGrade?.iScore ?? 50);
+  const iScore     = r.instGrade?.iScore ?? 50;
+  const verdict    = r._instLayer?.verdict?.verdict ?? 'WATCH';
+  const absorption = absorptionFromHiddenFlow(r);
+  const cvd        = extractCVD(r);
+  const mmTrap     = r._instLayer?.mmTrap?.trap ?? false;
+  const vwap       = extras.vwap ?? r.fbCheck?.vwap;
+  const volRatio   = parseFloat(r.volRatio ?? r.volZ?.ratio ?? 1);
+
+  // Risk rating
+  const riskLevel = mmTrap                   ? '🔴 HIGH — possible fake move'
+    : grade === 'A+' || grade === 'A'        ? '🟢 LOW — clean signal'
+    : grade === 'B'                          ? '🟡 MEDIUM — decent setup'
+    : '🟠 MEDIUM-HIGH — weaker signal';
+
+  // What is happening
+  let happening;
+  if (mmTrap) {
+    happening = 'Warning: the price is moving up but the real buying pressure is NOT following. This can be a fake breakout designed to trap buyers. Be very careful.';
+  } else if (absorption >= 70) {
+    happening = `Large institutions are quietly buying this coin (${absorption}/100 confidence). The price hasn't exploded yet, but the smart money is accumulating. This often happens before a big move up.`;
+  } else if (cvd.direction === 'BULLISH') {
+    happening = 'More buyers than sellers are entering this coin right now. The buying pressure is real and confirmed by volume data.';
+  } else {
+    happening = 'Technical patterns suggest a potential upward move. The score is moderate — treat this as a watchlist candidate.';
+  }
+
+  // VWAP context
+  const vwapLine = vwap
+    ? `• VWAP (24h fair price): \`${fmtPrice(vwap)}\` — price is ${r.entry >= vwap ? '*above* ✅ (momentum in your favor)' : '*below* ⚠️ (price under average — wait for reclaim)'}`
+    : null;
+
+  // Volume context
+  const volLine = volRatio >= 2
+    ? `• Volume: *${volRatio.toFixed(1)}x* above normal — unusual surge in activity`
+    : volRatio >= 1.5
+    ? `• Volume: ${volRatio.toFixed(1)}x above normal — buyers stepping in`
+    : `• Volume: Normal — no unusual surge yet`;
+
+  // Absorption
+  const absLine = absorption >= 50
+    ? `• Smart money: ${absorption}/100 — ${absorption >= 80 ? 'heavy institutional buying detected' : 'moderate institutional interest'}`
+    : null;
+
+  // Recommendation
+  let recommend;
+  if (mmTrap || verdict === 'AVOID') {
+    recommend = `🚫 *Skip this trade.* The signal has a high-risk pattern (possible fake move). Wait for the next clean setup.`;
+  } else if (verdict === 'WAIT') {
+    recommend = `⏳ *Not yet.* The setup is forming but not ready. Add it to your watchlist and wait for the bot to alert you when it triggers.`;
+  } else {
+    const slPct = r.sl && r.entry ? ((r.entry - r.sl) / r.entry * 100).toFixed(1) : '?';
+    recommend = (
+      `✅ *You can consider entering.*\n` +
+      ` 1. Buy a small amount at around \`${fmtPrice(r.entry)}\`\n` +
+      ` 2. Set your stop loss at \`${fmtPrice(r.sl)}\` (-${slPct}%) — *this is your safety net*\n` +
+      ` 3. Take half profit at \`${fmtPrice(r.tp1)}\` — lock in gains\n` +
+      ` 4. Let the rest run to \`${fmtPrice(r.tp2)}\` or beyond`
+    );
+  }
+
+  const lines = [
+    `💡 *Simple Explanation — ${r.symbol}*`,
+    `━━━━━━━━━━━━━━━━━━━━━━`,
+    ``,
+    `🔍 *What's happening:*`,
+    happening,
+    ``,
+    `📊 *Key signals explained:*`,
+    volLine,
+    absLine,
+    vwapLine,
+    ``,
+    `📋 *My recommendation:*`,
+    recommend,
+    ``,
+    `⚠️ *Risk level:* ${riskLevel}`,
+    `_Always set your stop loss. Never risk more than you're comfortable losing._`,
+  ].filter(l => l !== null).join('\n');
+
+  return lines;
+}
+
 // ─── EXPORTS ─────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -732,6 +839,7 @@ module.exports = {
   buildSignalAlert,
   buildAccumulationAlert,
   buildEntryPlan,
+  buildExplainMessage,
   buildTP1Alert,
   buildWeakeningAlert,
   buildExitNowAlert,

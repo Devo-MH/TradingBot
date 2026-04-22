@@ -40,6 +40,7 @@ const { adapt }  = require('./src/scannerAdapter');
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN ?? process.env.BOT_TOKEN;
 const CONFIG = {
   TELEGRAM_TOKEN  : TELEGRAM_TOKEN ?? 'YOUR_BOT_TOKEN_HERE',
+  CHANNEL_ID      : process.env.CHANNEL_ID ?? null,
   SCAN_INTERVAL_MS: 5 * 60 * 1000,
   BINANCE_HOSTS   : [
     'https://data-api.binance.vision',
@@ -53,6 +54,9 @@ if (!TELEGRAM_TOKEN) {
   process.exit(1);
 }
 console.log('[Config] TOKEN prefix:', TELEGRAM_TOKEN.substring(0, 15));
+console.log('[Config] CHANNEL_ID:', CONFIG.CHANNEL_ID ?? 'none');
+
+let channelId = CONFIG.CHANNEL_ID;
 
 // ─── BOT INIT ─────────────────────────────────────────────────────────────────
 const bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN, { polling: true });
@@ -93,6 +97,20 @@ async function getCandles(symbol, interval, limit = 120) {
     closes : res.data.map(c => parseFloat(c[4])),
     volumes: res.data.map(c => parseFloat(c[5])),
   };
+}
+
+async function getVWAP(symbol) {
+  try {
+    const c = await getCandles(symbol, '1h', 24);
+    if (!c) return null;
+    let num = 0, den = 0;
+    for (let i = 0; i < c.closes.length; i++) {
+      const tp = (c.highs[i] + c.lows[i] + c.closes[i]) / 3;
+      num += tp * c.volumes[i];
+      den += c.volumes[i];
+    }
+    return den > 0 ? num / den : null;
+  } catch { return null; }
 }
 
 async function getOrderBook(symbol) {
@@ -356,6 +374,36 @@ bot.onText(/\/tracked/, async (msg) => {
   await send(uid, `*Open Positions (${snapshot.openCount}):*\n${lines.join('\n')}`);
 });
 
+// ─── /setchannel — configure broadcast channel for signals ───────────────────
+
+bot.onText(/\/setchannel(?:\s+(-?\d+))?/, async (msg, match) => {
+  const uid      = msg.chat.id;
+  const provided = match?.[1];
+
+  if (provided) {
+    channelId = provided;
+    await send(uid,
+      `✅ Channel registered locally: \`${channelId}\`
+
+` +
+      `To persist this on Railway, add/update the environment variable:\n` +
+      `\`CHANNEL_ID = ${channelId}\``
+    );
+    console.log('[Channel] Registered channel:', channelId);
+    return;
+  }
+
+  await send(uid,
+    `*Set your broadcast channel:*
+
+` +
+    `1. Add the bot to your channel as an admin.\n` +
+    `2. Forward any message from the channel to @userinfobot.\n` +
+    `3. Send:\n` +
+    `\`/setchannel -1001234567890\``
+  );
+});
+
 // ─── /testsignal — fire a fake signal to verify formatting ───────────────────
 
 bot.onText(/\/testsignal(?:\s+(\S+))?/, async (msg, match) => {
@@ -503,28 +551,57 @@ bot.on('callback_query', async (query) => {
       const absorption = r._instLayer?.hiddenFlow?.confidence ?? 0;
       const obRatio    = r.orderBook?.ratio ?? r.instGrade?.obRatio;
       const tf         = r._instLayer?.tfHierarchy;
+      const flowType   = r._instLayer?.hiddenFlow?.type ?? null;
+      const verdict    = r._instLayer?.verdict?.verdict ?? 'WATCH';
+      const iScore     = r.instGrade?.iScore ?? 0;
+
+      // Flow type with emoji warning
+      const flowLabel = flowType === 'HIDDEN_SELLER'
+        ? `⚠️ HIDDEN SELLER — large entity selling into every push`
+        : flowType === 'HIDDEN_BUYER'
+        ? `✅ HIDDEN BUYER — large entity accumulating quietly`
+        : flowType ?? 'None detected';
+
+      // Contradiction banner: score says buy but flow says sell
+      const contradiction = (flowType === 'HIDDEN_SELLER' && iScore >= 70)
+        ? `⚠️ *Score conflict:* High score (${iScore}/100) but Hidden Seller detected.\nThis can mean the scanner sees structure, but smart money is distributing.\n*Treat as WATCH, not a confident entry.*\n━━━━━━━━━━━━━━━━━━━━━━\n`
+        : '';
+
+      // Timeframe display with readable labels
+      const tf15 = tf?.tf15m?.trend ?? 'N/A';
+      const tf1h = tf?.tf1h?.trend  ?? 'N/A';
+      const tf4h = tf?.tf4h?.trend  ?? 'N/A (no data)';
+      const tfLine = tf
+        ? ` · Alignment: ${tf.conflictType ?? 'UNKNOWN'}\n · 15m: ${tf15} | 1h: ${tf1h} | 4h: ${tf4h}`
+        : ' · No TF data';
+
+      // Verdict emoji
+      const verdictEmoji = { HIGH_CONVICTION: '🔥', BUY: '✅', WATCH: '👁', WAIT: '⏳', AVOID: '🚫' }[verdict] ?? '⚪';
+
       await send(uid,
         `📊 *Full Analysis — ${symbol}*\n` +
         `━━━━━━━━━━━━━━━━━━━━━━\n` +
-        `*Institutional Score:* ${r.instGrade?.iScore ?? '?'}/100\n` +
-        `*Verdict:* ${r._instLayer?.verdict?.verdict ?? 'WATCH'}\n\n` +
+        contradiction +
+        `*Score:* ${iScore}/100   *Verdict:* ${verdictEmoji} ${verdict}\n\n` +
         `*Smart Money:*\n` +
         ` · Absorption: ${absorption}/100  ${absorption >= 90 ? '🔥 Max' : absorption >= 70 ? '✅ Strong' : absorption >= 50 ? '🟡 Moderate' : '⚪ Weak'}\n` +
-        ` · Flow type:  ${r._instLayer?.hiddenFlow?.type ?? 'None detected'}\n` +
+        ` · Flow type:  ${flowLabel}\n` +
         (obRatio ? ` · OB ratio:   ${obRatio.toFixed(2)}x bids\n` : '') +
         `\n*Timeframes:*\n` +
-        (tf ? ` · Alignment:  ${tf.conflictType ?? 'UNKNOWN'}\n · 15m: ${tf.tf15m?.trend ?? '?'} | 1h: ${tf.tf1h?.trend ?? '?'} | 4h: ${tf.tf4h?.trend ?? '?'}\n` : ' · No TF data\n') +
+        tfLine + '\n' +
         `\n*Structure:*\n` +
         ` · Spring: ${r.spring?.spring ? '✅ Yes' : '—'}\n` +
         ` · Shakeout: ${r._instLayer?.shakeout?.shakeout ? '✅ Yes' : '—'}\n` +
-        ` · MM Trap: ${r._instLayer?.mmTrap?.trap ? '⚠️ Yes' : '—'}\n` +
+        ` · MM Trap: ${r._instLayer?.mmTrap?.trap ? '⚠️ Yes — fake breakout risk' : '—'}\n` +
         ` · Explosion readiness: ${r.explosionReadiness?.score ?? '?'}/100\n\n` +
         `*Targets if entering:*\n` +
         ` SL: \`${bridge.fmtPrice(r.sl)}\` | TP1: \`${bridge.fmtPrice(r.tp1)}\` | TP2: \`${bridge.fmtPrice(r.tp2)}\``,
         {
           inline_keyboard: [[
-            { text: '✅ I want to enter', callback_data: `sig_enter_${symbol}` },
-            { text: '👀 Watch it',        callback_data: `sig_watch_${symbol}` },
+            { text: '✅ I want to enter',  callback_data: `sig_enter_${symbol}` },
+            { text: '💡 Explain simply',   callback_data: `sig_explain_${symbol}` },
+          ], [
+            { text: '👀 Watch it',         callback_data: `sig_watch_${symbol}` },
           ]],
         }
       );
@@ -550,6 +627,14 @@ bot.on('callback_query', async (query) => {
 
     if (data.startsWith('sig_skip_')) {
       await edit(uid, mid, `❌ Skipped. I'll keep scanning.`);
+      return;
+    }
+
+    if (data.startsWith('sig_explain_')) {
+      const symbol = data.replace('sig_explain_', '');
+      const cached = signalCache.get(symbol);
+      if (!cached) { await send(uid, `⚠️ Signal for ${symbol} expired.`); return; }
+      await send(uid, bridge.buildExplainMessage(cached, cached._extras ?? {}));
       return;
     }
 
@@ -791,9 +876,8 @@ async function handleMarketEntry(uid, symbol, msgId, customPrice = null) {
 
 const signalCache = new Map();
 
-function cacheSignal(scannerResult) {
-  signalCache.set(scannerResult.symbol, { ...scannerResult, _cachedAt: Date.now() });
-  // Auto-expire after 30 min
+function cacheSignal(scannerResult, extras = {}) {
+  signalCache.set(scannerResult.symbol, { ...scannerResult, _cachedAt: Date.now(), _extras: extras });
   setTimeout(() => signalCache.delete(scannerResult.symbol), 30 * 60 * 1000);
 }
 
@@ -803,7 +887,6 @@ function cacheSignal(scannerResult) {
 
 async function broadcastSignal(scannerResult) {
   try {
-    cacheSignal(scannerResult);
     sector.recordSignal(scannerResult.symbol, scannerResult.instGrade?.iScore ?? 50);
 
     // Check for dangerous news before broadcasting
@@ -814,11 +897,21 @@ async function broadcastSignal(scannerResult) {
     }
 
     // Fetch async extras once — shared across all recipients
-    const [newsSummary, rotationLine] = await Promise.all([
+    const [newsSummary, rotationLine, vwap] = await Promise.all([
       news.buildNewsSummary(scannerResult.symbol),
       Promise.resolve(sector.buildRotationLine(scannerResult.symbol)),
+      getVWAP(scannerResult.symbol),
     ]);
-    const extras = { newsSummary, rotationLine };
+    const extras = { newsSummary, rotationLine, vwap };
+    cacheSignal(scannerResult, extras);
+
+    if (channelId) {
+      try {
+        await bot.sendMessage(channelId, buildChannelPost(scannerResult, extras), { parse_mode: 'Markdown' });
+      } catch (e) {
+        console.error('[Channel]', e.response?.data?.description ?? e.message);
+      }
+    }
 
     const recipients = bridge.getEligibleUsers(scannerResult);
     for (const { userId, isWatched, alertType } of recipients) {
@@ -834,6 +927,20 @@ async function broadcastSignal(scannerResult) {
   } catch (e) {
     console.error('[Broadcast]', e.message);
   }
+}
+
+function buildChannelPost(r, extras) {
+  const verdict = r._instLayer?.verdict?.verdict ?? 'WATCH';
+  const emoji   = verdict === 'BUY' ? '✅' : verdict === 'WAIT' ? '⏳' : verdict === 'WATCH' ? '👁' : '⚠️';
+  const score   = r.instGrade?.iScore ?? 50;
+  const lines = [
+    `${emoji} *${r.symbol}* — ${verdict}`,
+    `Score: *${score}*  |  Entry: \\`${bridge.fmtPrice(r.entry)}\\``,
+    r.sl && r.tp1 ? `SL: \\`${bridge.fmtPrice(r.sl)}\\`  TP1: \\`${bridge.fmtPrice(r.tp1)}\\`` : null,
+    extras.newsSummary || null,
+    extras.rotationLine || null,
+  ].filter(Boolean);
+  return lines.join('\n');
 }
 
 // ─── INST ANALYSIS (lightweight — for monitor) ────────────────────────────────
