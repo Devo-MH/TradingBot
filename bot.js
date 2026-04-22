@@ -914,138 +914,250 @@ async function broadcastSignal(scannerResult) {
 }
 
 function buildFullAnalysis(r) {
-  const bt = '`';
-  const sep = '――――――――――――――――――';
+  const bt  = '`';
+  const sep = '━━━━━━━━━━━━━━━━━━';
+  const raw = r._raw ?? {};
 
-  // ── Identity ──────────────────────────────────────────────────────────────
-  const iScore         = r.instGrade?.iScore ?? 0;
-  const checklistScore = r.instGrade?.checklistScore;
-  const verdict        = r._instLayer?.verdict?.verdict ?? 'WATCH';
-  const verdictEmoji   = { HIGH_CONVICTION: '🔥', BUY: '✅', WATCH: '👁', WAIT: '⏳', AVOID: '🚫' }[verdict] ?? '⚪';
-  const grade          = bridge.scoreToGrade(iScore);
-  const classLabel     = r.classification?.includes('EXPLOSIVE') ? '🔥 EXPLOSIVE'
-    : r.classification?.includes('STRONG') ? '💪 STRONG SETUP'
-    : r.classification?.includes('EARLY')  ? '📈 EARLY SETUP'
-    : r.classification?.includes('ACCUM')  ? '📊 ACCUMULATION'
+  // Helper: safe percent between two prices
+  const pctOf = (a, b) => (b && a && b > 0) ? ((a - b) / b * 100).toFixed(1) : null;
+  const fmtK  = v => !v ? '?' : v >= 1e6 ? (v/1e6).toFixed(1)+'M' : v >= 1000 ? (v/1000).toFixed(1)+'K' : Number(v).toFixed(0);
+  const safe  = s => String(s ?? '').replace(/[*_`]/g, '');
+
+  // ── Header ────────────────────────────────────────────────────────────────
+  const instGrade   = raw.instGrade ?? {};
+  const gradeLabel  = instGrade.grade === 'A+' ? '⭐⭐⭐ STRONG SETUP'
+    : instGrade.grade === 'A'  ? '⭐⭐ GOOD SETUP'
+    : instGrade.grade === 'B'  ? '⭐ MODERATE SETUP'
+    : instGrade.grade === 'C'  ? '⚠️ WEAK SETUP — Low conviction, wait for confirmation'
+    : r.classification?.includes('EXPLOSIVE') ? '🔥 EXPLOSIVE SETUP'
+    : r.classification?.includes('STRONG')    ? '💪 STRONG SETUP'
     : '📊 SETUP';
-  const scoreLabel = checklistScore != null ? `${checklistScore}` : `${iScore}/100`;
+  const narrativeTag = raw.narrative ? ` ${raw.narrative.categoryEmoji ?? ''} ${raw.narrative.category ?? ''}` : '';
+  const htf = raw.htf ?? {};
+  const htfLine = htf.confirmed
+    ? `   1h: ✅ RSI ${htf.htfRSI}`
+    : htf.reason ? `   1h: ❌ ${safe(htf.reason)}` : '';
 
-  // ── Indicators ────────────────────────────────────────────────────────────
-  const hurst   = r.hurst;
-  const tsmom   = r.tsmom;
-  const atrPct  = r.atrPct;
-  const volZ    = r.volZ?.ratio ?? r.volZ?.z ?? 0;
-  const atrCoiling = atrPct != null && parseFloat(atrPct) < 1.0;
+  // ── Blueprint bar ─────────────────────────────────────────────────────────
+  const hurst  = r.hurst;
+  const tsmom  = r.tsmom;
+  const volZ   = r.volZ;
+  const bpParts = [
+    hurst != null ? `📈 H=${hurst.toFixed(2)}` : null,
+    tsmom != null ? `🚀 TSMOM ${tsmom.toFixed(1)}` : null,
+    r.spring?.spring ? `🌱 Spring ${r.spring.score}/100` : null,
+    r.volZ?.highAnomaly ? `⚡ Vol Z=${(r.volZ.z ?? r.volZ.ratio ?? 0).toFixed(2)}` : null,
+    r.fbCheck?.isFake ? '⚠️ FAKE BREAKOUT' : null,
+  ].filter(Boolean);
+  const bpLine = bpParts.length ? `   Blueprint: ${bpParts.join(' | ')}` : null;
 
-  const hurstLine = hurst != null
-    ? `📊 H=${hurst.toFixed(2)} ${hurst >= 0.9 ? '🔥 exceptional trending' : hurst >= 0.85 ? '✅ strong trending' : hurst >= 0.7 ? '🟡 moderate' : '⚪ weak'}`
-    : null;
-  const tsmomLine = tsmom != null
-    ? `📈 TSMOM=${tsmom.toFixed(1)} ${tsmom >= 0.9 ? '📈 max bullish' : tsmom >= 0.5 ? '🟡 bullish' : '📉 bearish'}`
-    : null;
-  const atrLine = atrPct != null
-    ? `📐 ATR=${parseFloat(atrPct).toFixed(2)}% ${atrCoiling ? '🗜️ coiling — compressed for explosion' : parseFloat(atrPct) <= 1.8 ? '✅ normal' : '⚡ volatile'}`
-    : null;
-  const volZLine = `📦 Vol Z=${volZ.toFixed(2)} ${volZ >= 4 ? '🚀 extreme surge' : volZ >= 2 ? '🔥 high anomaly' : volZ >= 1.5 ? '📈 elevated' : volZ < 0.5 ? '⚪ stealth' : '➡️ normal'}`;
+  // ── Volume intent ─────────────────────────────────────────────────────────
+  const volIntentLine = raw.volIntent?.line ? safe(raw.volIntent.line) : null;
 
-  // ── Signals list ──────────────────────────────────────────────────────────
-  const signals    = r.signals ?? [];
-  const sigLines   = signals.slice(0, 8).map(s => ` · ${s}`).join('\n');
+  // ── Momentum ──────────────────────────────────────────────────────────────
+  const m  = raw.momentum ?? {};
+  const momBlock = m.label ? [
+    `   Momentum: ${m.label}`,
+    m.contProb != null ? ` Continuation: ${m.contProb}%` : null,
+    ...(m.signals ?? []).slice(0, 3).map(s => ` · ${safe(s)}`),
+  ].filter(Boolean).join('\n') : null;
+
+  // ── Moon potential ────────────────────────────────────────────────────────
+  const mp = raw.moonData ?? {};
+  const moonBlock = mp.label ? [
+    `   Moon Potential: ${mp.label}${mp.pct ? ' — ' + mp.pct : ''}`,
+    ...(mp.signals ?? []).slice(0, 2).map(s => ` · ${safe(s)}`),
+  ].filter(Boolean).join('\n') : null;
+
+  // ── Liquidity ─────────────────────────────────────────────────────────────
+  const lf  = raw.lf ?? {};
+  const lfSignals = (lf.lfSignals ?? []).slice(0, 2).map(s => ` · ${safe(s)}`);
+  const liqBlock = lf.mfi ? [
+    `   Liquidity MFI: ${lf.mfi} | Flow: ${lf.flowRatio}x`,
+    ...lfSignals,
+  ].join('\n') : null;
+
+  // ── Trend ─────────────────────────────────────────────────────────────────
+  const tc = raw.trendConf ?? {};
+  const lt = raw.liqTracker ?? {};
+  const trendBlock = tc.trendStatus ? [
+    `   Trend: ${tc.trendStatus}`,
+    lt.status ? ` Liq Tracker: ${lt.status}${lt.liqRisk ? ' | Risk: ' + lt.liqRisk : ''}` : null,
+  ].filter(Boolean).join('\n') : null;
+
+  // ── Gann ─────────────────────────────────────────────────────────────────
+  const gann = raw.gann ?? {};
+  const gannLine = gann.cycleStatus ? `   Gann: ${gann.angleStatus ?? ''} | ${safe(gann.cycleStatus)}` : null;
 
   // ── Order book ────────────────────────────────────────────────────────────
-  const obRatio = r.orderBook?.ratio ?? r.instGrade?.obRatio;
+  const obRatio = r.orderBook?.ratio ?? 0;
   const obBids  = r.orderBook?.bids  ?? 0;
   const obAsks  = r.orderBook?.asks  ?? 0;
-  const fmtK    = v => v >= 1e6 ? (v/1e6).toFixed(1)+'M' : v >= 1000 ? (v/1000).toFixed(1)+'K' : v.toFixed(0);
-  const obLabel = obRatio == null ? '' : obRatio >= 3 ? '🔥 Strong bid dominance'
-    : obRatio >= 2   ? '✅ Bids dominating'
-    : obRatio >= 1.2 ? '🟡 Mild bid advantage'
-    : obRatio >= 0.9 ? '➡️ Balanced — watch for seller re-entry'
-    : '⚠️ Sellers outweigh buyers — wait for volume confirm';
-  const obLine = obBids > 0 && obAsks > 0
-    ? `Bids: $${fmtK(obBids)} | Asks: $${fmtK(obAsks)} | Ratio: ${obRatio.toFixed(2)}x\n · ${obLabel}`
-    : obRatio != null ? `Ratio: ${obRatio.toFixed(2)}x — ${obLabel}` : 'No data';
+  const obLabel = obRatio >= 3 ? 'Strong bid dominance 🔥'
+    : obRatio >= 2   ? 'Bids dominating ✅'
+    : obRatio >= 0.9 ? 'Balanced — watch for seller re-entry'
+    : 'Sellers outweigh buyers ⚠️';
+  const obBlock = obBids > 0 && obAsks > 0
+    ? `💰 OB Depth: Bids $${fmtK(obBids)} vs Asks $${fmtK(obAsks)} | Ratio ${obRatio.toFixed(2)}x\n · ${obLabel}`
+    : obRatio > 0 ? `💰 OB Ratio: ${obRatio.toFixed(2)}x — ${obLabel}` : null;
 
-  // ── Volume direction ──────────────────────────────────────────────────────
-  const volRatio   = parseFloat(r.volRatio ?? 1);
-  const volIntent  = r.volIntent ?? r._raw?.volIntent ?? '';
-  const volDirLabel = volRatio >= 3 ? '🚀 SURGING' : volRatio >= 1.5 ? '📈 RISING' : volRatio >= 0.8 ? '➡️ STABLE' : '📉 DECLINING';
-  const volLine    = `${volRatio.toFixed(1)}x avg ${volDirLabel}${volIntent ? ' — ' + volIntent : ''}`;
+  // ── Signals list ──────────────────────────────────────────────────────────
+  const signals = r.signals ?? [];
 
-  // ── Context ───────────────────────────────────────────────────────────────
-  const expansionType  = r.expansion?.expansionType ?? r._raw?.ppExpansion ?? r._raw?.expansionType ?? '';
-  const action         = r._raw?.action ?? '';
-  const session        = r.session ?? '';
-  const sessionWeight  = r.sessionWeight ?? 0;
-  const sessionEmoji   = { EUROPE: '🌍', US: '🇺🇸', ASIA: '🌏' }[session] ?? '🌐';
-  const instConf       = r._raw?.instConfidence ?? iScore;
-  const instClass      = r._raw?.instClass ?? (instConf >= 90 ? 'EXPLOSIVE' : instConf >= 70 ? 'CLEAN' : 'RISKY');
-  const absorption     = r._instLayer?.hiddenFlow?.confidence ?? r._raw?.absorption ?? 0;
-  const flowType       = r._instLayer?.hiddenFlow?.type ?? null;
-  const mmTrap         = r._instLayer?.mmTrap?.trap ?? false;
+  // ── Moonshot block ────────────────────────────────────────────────────────
+  const at = raw.adjustedTargets;
+  let moonshotBlock = null;
+  if (at?.targetMultiplier > 1.2) {
+    const parts = [`🎯 MOONSHOT POTENTIAL: ${at.targetMultiplier.toFixed(1)}x`];
+    if (raw.narrative?.narrativeBonus > 0) parts.push(` · Narrative: ${raw.narrative.categoryEmoji ?? ''} ${raw.narrative.category ?? ''}`);
+    if (raw.tokenAge?.ageDays)             parts.push(` · Age: ${raw.tokenAge.ageDays}d — ${raw.tokenAge.ageCategory ?? ''}`);
+    if (raw.volToMCap?.ratioCategory && raw.volToMCap.ratioCategory !== 'UNKNOWN') parts.push(` · Liquidity: ${raw.volToMCap.ratioCategory}`);
+    if (at.tp1) parts.push(` · Adjusted Targets: TP1 ${bt}${bridge.fmtPrice(at.tp1)}${bt} | TP2 ${bt}${bridge.fmtPrice(at.tp2)}${bt} | Moon ${bt}${bridge.fmtPrice(at.moon)}${bt}`);
+    moonshotBlock = parts.join('\n');
+  }
 
-  // ── Contradiction warning ─────────────────────────────────────────────────
-  const contradiction = (flowType === 'HIDDEN_SELLER' && iScore >= 70)
-    ? `⚠️ Score conflict: High inst. confidence but Hidden Seller detected.\nTreat as WATCH — smart money may be distributing.\n${sep}\n`
-    : '';
+  // ── Expansion engine ──────────────────────────────────────────────────────
+  const ex  = raw.expansion ?? r.expansion ?? {};
+  const bar = raw.barrier ?? {};
+  const wh  = raw.whale ?? {};
+  const ce  = raw.candleEnergy ?? {};
+  let expansionBlock = null;
+  if (ex.expansionType) {
+    const sellAdvice = ex.expansionTypeKey === 'MICRO'      ? `Take profit at TP1 — do not wait longer`
+      : ex.expansionTypeKey === 'CONTROLLED' ? `Exit 50% at TP1 — hold 50% for TP2`
+      : ex.expansionTypeKey === 'STRONG'     ? `Exit 30% at TP1 — let 70% run with trailing stop`
+      : ex.expansionTypeKey === 'DELAYED'    ? `Be patient — may consolidate first then explode`
+      : `Hold and take profits gradually — Moon setup`;
+    const barrierLine = bar.barrierStrength === 'HIGH'   ? `⚠️ Strong resistance at ${bar.nearestDist}% (${bar.nearestType})`
+      : bar.barrierStrength === 'MEDIUM' ? `⚡ Moderate resistance at ${bar.nearestDist}% (${bar.nearestType})`
+      : bar.nearestDist ? `✅ Path relatively clear — no nearby resistance (${bar.nearestDist}%+)` : null;
+    const parts = [
+      `Expansion Engine`,
+      `${ex.expansionType}${ex.expansionProbability ? ' (' + ex.expansionProbability + '%)' : ''}`,
+      ex.expectedMaxMove ? `Expected Move: ${ex.expectedMaxMove}` : null,
+      sellAdvice,
+      ...(ex.interpretations ?? []).slice(0, 3).map(i => ` · ${safe(i)}`),
+      barrierLine ? `Barrier Map: ${barrierLine}` : null,
+      ce.energyScore != null ? `Candle Energy: ${ce.energyScore}/10 — ${safe(ce.detail ?? '')}` : null,
+      wh.interpretation ? `Whale: ${safe(wh.interpretation)}` : null,
+    ].filter(Boolean);
+    expansionBlock = parts.join('\n');
+  }
+
+  // ── v6.0 Intelligence ─────────────────────────────────────────────────────
+  const lr   = raw.lateRisk  ?? {};
+  const trig = raw.trigger   ?? {};
+  const pers = raw.personality ?? {};
+  const ctx  = raw.mktCtx   ?? {};
+  let v6Block = null;
+  if (lr.lateRisk || trig.triggerClass || pers.personality) {
+    const lateEmoji = lr.lateRisk === 'HIGH' ? '🔴' : lr.lateRisk === 'MEDIUM' ? '🟡' : '🟢';
+    const trigEmoji = trig.triggerClass === 'IMMEDIATE' ? '⚡' : trig.triggerClass === 'NEAR' ? '🎯' : '⏳';
+    const lateNote  = lr.lateRisk === 'HIGH'   ? `HIGH — ${safe(lr.lateReasons?.[0] ?? 'extended move')}`
+      : lr.lateRisk === 'MEDIUM' ? `MEDIUM — ${safe(lr.lateReasons?.[0] ?? 'watch RSI')}`
+      : 'LOW — safe entry zone';
+    const parts = [
+      'v6.0 Intelligence',
+      ctx.context ? `${ctx.emoji ?? ''} Market: ${safe(ctx.context)} (${ctx.contextScore}/20)` : null,
+      trig.label  ? `${trigEmoji} Trigger: ${safe(trig.label)}` : null,
+      `${lateEmoji} Late Entry Risk: ${lateNote}`,
+      pers.personality ? `${pers.emoji ?? '⚡'} Expansion Personality: ${pers.personality} — ${safe(pers.note ?? '')}` : null,
+      instGrade.grade ? `${instGrade.gradeEmoji ?? ''} Institutional Grade: ${instGrade.grade} (${instGrade.iScore}/100)` : null,
+    ].filter(Boolean);
+    v6Block = parts.join('\n');
+  }
+
+  // ── Institutional summary ─────────────────────────────────────────────────
+  const inst    = r._instLayer ?? {};
+  const verdict = inst.verdict?.verdict ?? 'WATCH';
+  const verdEmoji = { HIGH_CONVICTION: '🔥', BUY: '✅', WATCH: '👁', WAIT: '⏳', AVOID: '🚫' }[verdict] ?? '⚪';
+  const tfH     = inst.tfHierarchy ?? {};
+  const mmTrap  = inst.mmTrap?.trap ?? false;
+  const bullishPts = [];
+  if (tfH.conflictType === 'FULL_ALIGNMENT') bullishPts.push('Full 15m+1h+4h alignment');
+  if (r.spring?.spring)                     bullishPts.push('Wyckoff Spring confirmed');
+  if (inst.shakeout?.shakeout)              bullishPts.push('Weak-hand shakeout — recovery likely');
+  if (inst.hiddenFlow?.type === 'HIDDEN_BUYER') bullishPts.push('Hidden buyer — institutional accumulation');
+  const flowType = inst.hiddenFlow?.type;
+  const contradiction = (flowType === 'HIDDEN_SELLER' && (instGrade.iScore ?? 0) >= 70)
+    ? `⚠️ Score conflict: High confidence but Hidden Seller — treat as WATCH\n` : '';
+
+  const instBlock = [
+    `🏛 Institutional Intelligence`,
+    `${verdEmoji} Verdict: ${verdict} (${inst.verdict?.confidence ?? instGrade.iScore ?? '?'}/100)`,
+    tfH.conflictType ? `${tfH.conflictType === 'FULL_ALIGNMENT' ? '✅' : '⚠️'} TF Alignment: ${tfH.conflictType}` : null,
+    inst.conflicts?.signalClarity ? `${inst.conflicts.signalClarity === 'CLEAR' || inst.conflicts.signalClarity === 'EXPLAINABLE' ? '✅' : '⚠️'} Signal Clarity: ${inst.conflicts.signalClarity}` : null,
+    contradiction || null,
+    bullishPts.length ? `✅ Bullish:\n${bullishPts.map(p => ` · ${p}`).join('\n')}` : null,
+    mmTrap ? `⚠️ MM Trap detected — fake breakout risk` : null,
+  ].filter(Boolean).join('\n');
 
   // ── Entry plan ────────────────────────────────────────────────────────────
-  const pct = (a, b) => b && a ? ((a - b) / b * 100).toFixed(1) : null;
-  const confirmPct   = pct(r.confirmAbove, r.entry);
-  const slPct        = pct(r.sl, r.entry);
-  const tp1Pct       = pct(r.tp1, r.entry);
-  const tp2Pct       = pct(r.tp2, r.entry);
-  const moonPct      = pct(r.moonPrice, r.entry);
-  const triggerLabel = r.triggerDistance != null
-    ? `\n · ${parseFloat(r.triggerDistance).toFixed(1)}% to breakout — ${parseFloat(r.triggerDistance) <= 0.5 ? 'imminent 🎯' : parseFloat(r.triggerDistance) <= 1.5 ? 'very close' : 'approaching'}`
-    : '';
+  const slPct   = pctOf(r.sl,        r.entry);
+  const tp1Pct  = pctOf(r.tp1,       r.entry);
+  const tp2Pct  = pctOf(r.tp2,       r.entry);
+  const moonPct = pctOf(r.moonPrice, r.entry);
+  const conPct  = pctOf(r.confirmAbove, r.entry);
+  const trigLabel = r.triggerDistance != null
+    ? ` · ${parseFloat(r.triggerDistance).toFixed(1)}% to range breakout — ${parseFloat(r.triggerDistance) <= 0.5 ? 'imminent' : parseFloat(r.triggerDistance) <= 1.5 ? 'very close' : 'approaching'}`
+    : null;
 
-  // ── Structure ─────────────────────────────────────────────────────────────
-  const structParts = [];
-  if (r.spring?.spring)                      structParts.push('✅ Wyckoff Spring');
-  if (r._instLayer?.shakeout?.shakeout)      structParts.push('✅ Shakeout detected');
-  if (mmTrap)                                structParts.push('⚠️ MM Trap risk');
-  if (r.explosionReadiness?.score >= 70)     structParts.push(`💥 Explosion readiness: ${r.explosionReadiness.score}/100`);
-  if (r.fbCheck?.brokeHigh && !r.fbCheck?.isFake) structParts.push('✅ Breakout confirmed');
-
-  const lines = [
-    `📊 *Full Analysis — ${r.symbol}*`,
-    `━━━━━━━━━━━━━━━━━━━━━━`,
-    contradiction,
-    `${classLabel} | Score: *${scoreLabel}* | ${verdictEmoji} *${verdict}*`,
-    ``,
-    `📊 Indicators Breakdown:`,
-    hurstLine,
-    tsmomLine,
-    atrLine,
-    volZLine,
-    ``,
-    sep,
-    signals.length ? `🔍 Signals Detected:\n${sigLines}` : null,
-    signals.length ? sep : null,
-    ``,
-    `💰 Order Book:\n · ${obLine}`,
-    ``,
-    `📦 Volume: ${volLine}`,
-    expansionType ? `📐 Expansion: ${expansionType}` : null,
-    action        ? `🎯 Action: ${action}` : null,
-    session       ? ` · ${sessionEmoji} Session: ${session}${sessionWeight ? ' (weight: +' + sessionWeight + ')' : ''}` : null,
-    `💼 Inst. Confidence: ${instConf}/100 — ${instClass}`,
-    absorption >= 50 ? `🧲 Absorption: ${absorption}/100 ${absorption >= 90 ? '🔥 Max' : absorption >= 70 ? '✅ Strong' : '🟡 Moderate'}` : null,
-    structParts.length ? ` · ${structParts.join('  ·  ')}` : null,
-    ``,
-    sep,
-    `📋 Entry Plan:`,
-    r.confirmAbove ? ` · Confirm above: ${bt}${bridge.fmtPrice(r.confirmAbove)}${bt}${confirmPct ? ' (+' + confirmPct + '%)' : ''} on strong volume` : null,
+  const entryPlan = [
+    `Entry Plan:`,
+    r.confirmAbove ? ` · Confirm above: ${bt}${bridge.fmtPrice(r.confirmAbove)}${bt}${conPct ? ' (+' + conPct + '%)' : ''} on strong volume` : null,
     r.sl           ? ` · Stop: ${bt}${bridge.fmtPrice(r.sl)}${bt}${slPct ? ' (' + slPct + '%)' : ''}` : null,
-    r.tp1          ? ` · TP1: ${bt}${bridge.fmtPrice(r.tp1)}${bt}${tp1Pct ? ' (+' + tp1Pct + '%)' : ''} → sell 50% here` : null,
-    r.tp2          ? ` · TP2: ${bt}${bridge.fmtPrice(r.tp2)}${bt}${tp2Pct ? ' (+' + tp2Pct + '%)' : ''} → move stop to entry` : null,
-    r.moonPrice    ? ` · Moon: ${bt}${bridge.fmtPrice(r.moonPrice)}${bt}${moonPct ? ' (+' + moonPct + '%)' : ''} → trail stop` : null,
-    triggerLabel   || null,
-    hurst != null ? `\n📈 Hurst H=${hurst.toFixed(2)} — ${hurst >= 0.9 ? 'exceptional' : hurst >= 0.85 ? 'strong' : 'moderate'} trending structure` : null,
-  ].filter(l => l !== null && l !== '').join('\n');
+    r.tp1          ? ` · TP1: ${bt}${bridge.fmtPrice(r.tp1)}${bt}${tp1Pct ? ' (+' + tp1Pct + '%)' : ''}` : null,
+    r.tp2          ? ` · TP2: ${bt}${bridge.fmtPrice(r.tp2)}${bt}${tp2Pct ? ' (+' + tp2Pct + '%)' : ''}` : null,
+    r.moonPrice    ? ` · Moon: ${bt}${bridge.fmtPrice(r.moonPrice)}${bt}${moonPct ? ' (+' + moonPct + '%)' : ''}` : null,
+    trigLabel,
+  ].filter(Boolean).join('\n');
 
-  return lines;
+  // ── Assemble ──────────────────────────────────────────────────────────────
+  const sections = [
+    // Header
+    `${r.classification ?? '📊 SETUP'}\n*${r.symbol}*${narrativeTag}  ${gradeLabel}`,
+    htfLine || null,
+    // Prices
+    [
+      `   Entry: ${bt}${bridge.fmtPrice(r.entry)}${bt}`,
+      r.sl       ? `   SL:    ${bt}${bridge.fmtPrice(r.sl)}${bt} (${slPct ?? '?'}%)` : null,
+      r.tp1      ? `   TP1:   ${bt}${bridge.fmtPrice(r.tp1)}${bt}${tp1Pct ? ' (+' + tp1Pct + '%)' : ''}` : null,
+      r.tp2      ? `   TP2:   ${bt}${bridge.fmtPrice(r.tp2)}${bt}${tp2Pct ? ' (+' + tp2Pct + '%)' : ''}` : null,
+      r.moonPrice ? `   Moon:  ${bt}${bridge.fmtPrice(r.moonPrice)}${bt}${moonPct ? ' (+' + moonPct + '%)' : ''}` : null,
+      r.atrPct   ? `   ATR: ${(r.atrPct).toFixed(2)}%` : null,
+    ].filter(Boolean).join('\n'),
+    // Quick stats
+    [
+      raw.rsi ? `RSI: ${raw.rsi}` : null,
+      r.volRatio ? `Vol: ${parseFloat(r.volRatio).toFixed(2)}x` : null,
+      raw.change24h ? `24h: ${raw.change24h}%` : null,
+    ].filter(Boolean).length
+      ? '   ' + [raw.rsi ? `RSI: ${raw.rsi}` : null, r.volRatio ? `Vol: ${parseFloat(r.volRatio).toFixed(2)}x` : null, raw.change24h ? `24h: ${raw.change24h}%` : null].filter(Boolean).join(' | ')
+      : null,
+    raw.score != null ? `   Score: ${raw.score}/24 | ${raw.quality ?? ''}` : null,
+    bpLine,
+    volIntentLine,
+    // Sections
+    momBlock  ? sep + '\n' + momBlock  : null,
+    moonBlock ? sep + '\n' + moonBlock : null,
+    liqBlock  ? sep + '\n' + liqBlock  : null,
+    trendBlock ? sep + '\n' + trendBlock : null,
+    gannLine  ? '\n' + gannLine : null,
+    signals.length ? sep + '\n   Signals:\n' + signals.slice(0, 8).map(s => ` · ${safe(s)}`).join('\n') : null,
+    moonshotBlock ? sep + '\n' + moonshotBlock : null,
+    obBlock ? sep + '\n' + obBlock : null,
+    expansionBlock ? sep + '\n' + expansionBlock : null,
+    v6Block   ? sep + '\n' + v6Block   : null,
+    sep + '\n' + instBlock,
+    sep + '\n' + entryPlan,
+    hurst != null ? `\n📈 Hurst H=${hurst.toFixed(2)} — ${hurst >= 0.9 ? 'exceptional' : hurst >= 0.85 ? 'strong' : 'moderate'} trending structure` : null,
+    `_v6.0 • ${new Date().toUTCString()}_`,
+  ].filter(l => l !== null && l !== '');
+
+  // Telegram limit is 4096 chars — truncate gracefully if needed
+  let out = sections.join('\n');
+  if (out.length > 4000) out = out.slice(0, 3980) + '\n…_(message truncated)_';
+  return out;
 }
 
 function buildChannelPost(r, extras) {
