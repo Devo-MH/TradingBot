@@ -290,31 +290,45 @@ function buildDepthRow(r) {
 }
 
 /**
- * One plain-English sentence describing the CVD situation.
- * This is what Emy asked for: "CVD rising fast" or "price flat - CVD rising surprisingly".
+ * CVD line — shows intent, rise speed type, and the CVD vs price note.
+ * Uses volIntent object from scanner when available (most accurate).
  */
 function buildCVDLine(r) {
-  const cvd  = extractCVD(r);
+  const vi   = r.volIntent;  // full volIntent object from scanner
   const trap = r._instLayer?.mmTrap?.trap ?? false;
 
   if (trap) {
     return `⚠️ CVD: Price up but buying NOT confirming — *fake breakout risk*`;
   }
 
-  const flowType = r._instLayer?.hiddenFlow?.type;
-  const volRatio = parseFloat(r.volRatio ?? 0);
+  // ── Use rich volIntent data when available ────────────────────────────────
+  if (vi && typeof vi === 'object' && vi.intent) {
+    const riseRatio = vi.volTrendRatio ?? 1;
+    const riseType  = riseRatio > 1.5 ? '🔥 Sudden'
+      : riseRatio > 1.1 ? '📈 Fast'
+      : riseRatio < 0.8 ? '📉 Declining'
+      : '➡️ Steady';
+
+    const intentEmoji = vi.emoji ?? '⚪';
+    const cvdNote = vi.cvdNote ? ` — ${vi.cvdNote}` : '';
+
+    return `${intentEmoji} CVD: *${vi.intent}* | Rise: *${riseType}*${cvdNote}`;
+  }
+
+  // ── Fallback: derive from _instLayer ─────────────────────────────────────
+  const cvd        = extractCVD(r);
+  const flowType   = r._instLayer?.hiddenFlow?.type;
+  const volRatio   = parseFloat(r.volRatio ?? 0);
   const absorption = absorptionFromHiddenFlow(r);
 
   if (flowType === 'HIDDEN_BUYER') {
-    if (volRatio < 1.2) return `📈 CVD: Price flat — CVD rising surprisingly — *hidden accumulation*`;
-    if (absorption >= 80) return `📈 CVD: Rising fast alongside volume — *strong buying confirmed*`;
+    if (volRatio < 1.2) return `📈 CVD: Price flat — CVD rising *steadily* — hidden accumulation`;
+    if (absorption >= 80) return `📈 CVD: Rising *fast* alongside volume — strong buying confirmed`;
     return `📈 CVD: Bullish — buying pressure building`;
   }
-
   if (flowType === 'HIDDEN_SELLER') {
-    return `⚠️ CVD: Rising price — CVD falling — *distribution warning*`;
+    return `⚠️ CVD: Rising price — CVD falling — distribution warning`;
   }
-
   if (cvd.direction === 'BULLISH') return `📈 CVD: Aligned with price — trend confirmed`;
   if (cvd.direction === 'BEARISH') return `⚠️ CVD: Diverging — *proceed with caution*`;
   return `➡️ CVD: Neutral`;
