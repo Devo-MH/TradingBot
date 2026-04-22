@@ -947,10 +947,11 @@ function buildChannelPost(r, extras) {
   const verdict = r._instLayer?.verdict?.verdict ?? 'WATCH';
   const emoji   = verdict === 'BUY' ? '✅' : verdict === 'WAIT' ? '⏳' : verdict === 'WATCH' ? '👁' : '⚠️';
   const score   = r.instGrade?.iScore ?? 50;
+  const bt   = '`';
   const lines = [
     `${emoji} *${r.symbol}* — ${verdict}`,
-    `Score: *${score}*  |  Entry: \\`${bridge.fmtPrice(r.entry)}\\``,
-    r.sl && r.tp1 ? `SL: \\`${bridge.fmtPrice(r.sl)}\\`  TP1: \\`${bridge.fmtPrice(r.tp1)}\\`` : null,
+    `Score: *${score}*  |  Entry: ${bt}${bridge.fmtPrice(r.entry)}${bt}`,
+    r.sl && r.tp1 ? `SL: ${bt}${bridge.fmtPrice(r.sl)}${bt}  TP1: ${bt}${bridge.fmtPrice(r.tp1)}${bt}` : null,
     extras.newsSummary || null,
     extras.rotationLine || null,
   ].filter(Boolean);
