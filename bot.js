@@ -638,9 +638,26 @@ bot.on('callback_query', async (query) => {
     }
 
     if (data.startsWith('sig_watch_')) {
-      const symbol = data.replace('sig_watch_', '');
-      watchlist.addToWatchlist(uid, symbol, 'From signal alert');
-      await answerCb(query.id, `👀 Added ${symbol} to watchlist`);
+      const symbol     = data.replace('sig_watch_', '');
+      const cached     = signalCache.get(symbol);
+      const alertPrice = cached?.confirmAbove ?? cached?.breakoutLevel ?? (cached?.entry ? cached.entry * 1.005 : null);
+      const entryRef   = cached?.entry ?? null;
+      watchlist.addToWatchlist(uid, symbol, 'From signal alert', alertPrice, entryRef);
+      const bt = '`';
+      await send(uid,
+        `👀 *${symbol} added to watchlist*\n` +
+        (alertPrice
+          ? `🔔 Price alert set at ${bt}${bridge.fmtPrice(alertPrice)}${bt}\n` +
+            `I'll notify you the moment price breaks above that level.`
+          : `I'll alert you with priority when the next signal fires for this coin.`)
+      );
+      return;
+    }
+
+    if (data.startsWith('alert_dismiss_')) {
+      const symbol = data.replace('alert_dismiss_', '');
+      watchlist.fireAlert(uid, symbol);
+      await edit(uid, mid, `🔕 Alert dismissed for ${symbol}.`);
       return;
     }
 
@@ -1038,6 +1055,46 @@ async function runMonitorLoop() {
   );
 }
 
+// ─── PRICE ALERT CHECKER ──────────────────────────────────────────────────────
+// Runs every 5 min. Fires a Telegram notification when a watched coin's price
+// breaks above the alert level the user set when they tapped "Watch it".
+
+async function runPriceAlertChecker() {
+  const alerts = watchlist.getWatchlistAlerts();
+  if (!alerts.length) return;
+
+  for (const { userId, symbol, alertPrice, entryRef } of alerts) {
+    try {
+      const price = await getPrice(symbol);
+      if (!price || price < alertPrice) continue;
+
+      watchlist.fireAlert(userId, symbol);
+
+      const bt       = '`';
+      const pctGain  = entryRef ? ` (+${((alertPrice - entryRef) / entryRef * 100).toFixed(1)}% from signal entry)` : '';
+      await send(userId,
+        `🔔 *BREAKOUT ALERT — ${symbol}!*\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━\n` +
+        `Price just crossed your alert level.\n\n` +
+        `Alert trigger: ${bt}${bridge.fmtPrice(alertPrice)}${bt}${pctGain}\n` +
+        `Current price: ${bt}${bridge.fmtPrice(price)}${bt}\n` +
+        (entryRef ? `Signal entry was: ${bt}${bridge.fmtPrice(entryRef)}${bt}\n` : '') +
+        `\n*This is the breakout moment.* If you planned to enter, momentum is live now.`,
+        {
+          inline_keyboard: [[
+            { text: '✅ Enter trade',     callback_data: `sig_enter_${symbol}`    },
+            { text: '🔕 Dismiss alert',   callback_data: `alert_dismiss_${symbol}` },
+          ]],
+        }
+      );
+
+      await sleep(300);
+    } catch (e) {
+      console.error('[AlertChecker]', symbol, e.message);
+    }
+  }
+}
+
 // ─── SIGNAL OUTCOME RESOLVER ──────────────────────────────────────────────────
 // Runs every 15 min. Fetches current price for each pending signal and
 // marks it TP1_HIT / TP2_HIT / SL_HIT / EXPIRED automatically.
@@ -1102,12 +1159,16 @@ console.log('━━━━━━━━━━━━━━━━━━━━━━�
 // Start monitor loop every 5 minutes
 setInterval(runMonitorLoop, CONFIG.SCAN_INTERVAL_MS);
 
+// Check price alerts every 5 minutes
+setInterval(runPriceAlertChecker, CONFIG.SCAN_INTERVAL_MS);
+
 // Resolve signal outcomes every 15 minutes
 setInterval(resolveSignalOutcomes, 15 * 60 * 1000);
 
 // Run once immediately on startup
 runMonitorLoop().catch(e => console.error('[Monitor startup]', e.message));
 resolveSignalOutcomes().catch(e => console.error('[Resolver startup]', e.message));
+runPriceAlertChecker().catch(e => console.error('[AlertChecker startup]', e.message));
 
 console.log('  Bot polling started. Waiting for users...\n');
 

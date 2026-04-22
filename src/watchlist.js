@@ -28,11 +28,19 @@ function save(data) {
   } catch {}
 }
 
-function addToWatchlist(userId, symbol, reason = '') {
-  const wl = load();
+function addToWatchlist(userId, symbol, reason = '', alertPrice = null, entryRef = null) {
+  const wl  = load();
   const uid = String(userId);
   if (!wl[uid]) wl[uid] = {};
-  wl[uid][symbol] = { symbol, reason, addedAt: Date.now(), triggered: false };
+  wl[uid][symbol] = {
+    symbol,
+    reason,
+    addedAt    : Date.now(),
+    triggered  : false,
+    alertPrice : alertPrice ?? null,   // price level to fire notification at
+    entryRef   : entryRef  ?? null,    // original signal entry for context
+    alertFired : false,
+  };
   save(wl);
 }
 
@@ -62,17 +70,56 @@ function markTriggered(userId, symbol) {
   }
 }
 
+function fireAlert(userId, symbol) {
+  const wl  = load();
+  const uid = String(userId);
+  if (wl[uid]?.[symbol]) {
+    wl[uid][symbol].alertFired = true;
+    save(wl);
+  }
+}
+
+/** Returns all watchlist entries that have an unfired price alert, across all users. */
+function getWatchlistAlerts() {
+  const wl  = load();
+  const out = [];
+  for (const [uid, coins] of Object.entries(wl)) {
+    for (const item of Object.values(coins)) {
+      if (item.alertPrice && !item.alertFired) {
+        out.push({ userId: uid, symbol: item.symbol, alertPrice: item.alertPrice, entryRef: item.entryRef });
+      }
+    }
+  }
+  return out;
+}
+
 function buildWatchlistSummary(userId) {
   const items = getWatchlist(userId);
   if (!items.length) return '👀 Watchlist is empty.\n\nUse /watch SYMBOL to add a coin.';
 
+  const bt    = '`';
   const lines = items.map(w => {
-    const age  = Math.round((Date.now() - w.addedAt) / 60000);
-    const flag = w.triggered ? ' 🔔 Signal triggered!' : '';
-    return ` · \`${w.symbol}\`${flag}  (added ${age}m ago${w.reason ? ' — ' + w.reason : ''})`;
+    const age       = Math.round((Date.now() - w.addedAt) / 60000);
+    const status    = w.triggered ? ' 🔔 Signal triggered!'
+      : w.alertFired  ? ' ✅ Alert fired'
+      : '';
+    const alertLine = w.alertPrice && !w.alertFired
+      ? `\n     🔔 Alert: break above ${bt}${_fmt(w.alertPrice)}${bt}`
+      : '';
+    return ` · ${bt}${w.symbol}${bt}${status}  (${age < 60 ? age + 'm' : Math.round(age/60) + 'h'} ago)${alertLine}`;
   });
 
-  return `👀 *Your Watchlist (${items.length})*\n━━━━━━━━━━━━━━━━\n${lines.join('\n')}\n\nSignals on these coins arrive with priority.`;
+  return `👀 *Your Watchlist (${items.length})*\n━━━━━━━━━━━━━━━━\n${lines.join('\n')}\n\n_Signals on these coins arrive with priority. Alerts fire automatically._`;
+}
+
+function _fmt(v) {
+  const n = Number(v);
+  if (!isFinite(n) || n === 0) return 'N/A';
+  if (n < 0.001)  return n.toFixed(8);
+  if (n < 0.01)   return n.toFixed(6);
+  if (n < 1)      return n.toFixed(5);
+  if (n >= 1000)  return n.toFixed(2);
+  return n.toFixed(4);
 }
 
 /**
@@ -94,6 +141,8 @@ module.exports = {
   getWatchlist,
   isWatching,
   markTriggered,
+  fireAlert,
+  getWatchlistAlerts,
   buildWatchlistSummary,
   getUsersWatchingSymbol,
 };
