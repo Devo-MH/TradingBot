@@ -590,24 +590,31 @@ bot.on('callback_query', async (query) => {
       // Verdict emoji
       const verdictEmoji = { HIGH_CONVICTION: '🔥', BUY: '✅', WATCH: '👁', WAIT: '⏳', AVOID: '🚫' }[verdict] ?? '⚪';
 
+      // OB ratio warning (weak book even with hidden buyer)
+      const obWarnLine = obRatio != null && obRatio < 1.0
+        ? `\n⚠️ OB ratio ${obRatio.toFixed(2)}x — sellers slightly outweigh buyers in order book. Wait for volume confirmation before entering.`
+        : '';
+
+      const bt = '`';
       await send(uid,
         `📊 *Full Analysis — ${symbol}*\n` +
         `━━━━━━━━━━━━━━━━━━━━━━\n` +
-        contradiction +
-        `*Score:* ${iScore}/100   *Verdict:* ${verdictEmoji} ${verdict}\n\n` +
-        `*Smart Money:*\n` +
+        (contradiction ? contradiction + '\n' : '') +
+        `Score: *${iScore}/100*   Verdict: ${verdictEmoji} *${verdict}*\n` +
+        `\n💰 Smart Money:\n` +
         ` · Absorption: ${absorption}/100  ${absorption >= 90 ? '🔥 Max' : absorption >= 70 ? '✅ Strong' : absorption >= 50 ? '🟡 Moderate' : '⚪ Weak'}\n` +
         ` · Flow type:  ${flowLabel}\n` +
-        (obRatio ? ` · OB ratio:   ${obRatio.toFixed(2)}x bids\n` : '') +
-        `\n*Timeframes:*\n` +
+        (obRatio ? ` · OB ratio:   ${obRatio.toFixed(2)}x bids${obRatio < 1 ? ' ⚠️' : ''}\n` : '') +
+        obWarnLine +
+        `\n⏱ Timeframes:\n` +
         tfLine + '\n' +
-        `\n*Structure:*\n` +
+        `\n🏗 Structure:\n` +
         ` · Spring: ${r.spring?.spring ? '✅ Yes' : '—'}\n` +
         ` · Shakeout: ${r._instLayer?.shakeout?.shakeout ? '✅ Yes' : '—'}\n` +
         ` · MM Trap: ${r._instLayer?.mmTrap?.trap ? '⚠️ Yes — fake breakout risk' : '—'}\n` +
-        ` · Explosion readiness: ${r.explosionReadiness?.score ?? '?'}/100\n\n` +
-        `*Targets if entering:*\n` +
-        ` SL: \`${bridge.fmtPrice(r.sl)}\` | TP1: \`${bridge.fmtPrice(r.tp1)}\` | TP2: \`${bridge.fmtPrice(r.tp2)}\``,
+        ` · Explosion readiness: ${r.explosionReadiness?.score ?? '?'}/100\n` +
+        `\n🎯 Targets if entering:\n` +
+        ` SL: ${bt}${bridge.fmtPrice(r.sl)}${bt} | TP1: ${bt}${bridge.fmtPrice(r.tp1)}${bt} | TP2: ${bt}${bridge.fmtPrice(r.tp2)}${bt}`,
         {
           inline_keyboard: [[
             { text: '✅ I want to enter',  callback_data: `sig_enter_${symbol}` },
