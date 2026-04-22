@@ -1082,11 +1082,37 @@ function buildFullAnalysis(r) {
   const contradiction = (flowType === 'HIDDEN_SELLER' && (instGrade.iScore ?? 0) >= 70)
     ? `⚠️ Score conflict: High confidence but Hidden Seller — treat as WATCH\n` : '';
 
+  // Signal clarity — explain the REASON when conflicted so it's not confusing
+  const clarity = inst.conflicts?.signalClarity;
+  const obRatioVal = r.orderBook?.ratio ?? r.instGrade?.obRatio ?? 0;
+  const clarityReason = clarity === 'CONFLICTED'
+    ? obRatioVal < 0.8
+      ? `OB ratio ${obRatioVal.toFixed(2)}x — order book shows sellers outweigh buyers, even though timeframes align. Wait for OB to improve.`
+      : 'Mixed signals between engines — some indicators disagree on direction.'
+    : clarity === 'DANGEROUS'
+    ? 'MM Trap + conflicting signals — high risk, avoid entry.'
+    : null;
+
+  const clarityLine = clarity
+    ? `${clarity === 'CLEAR' || clarity === 'EXPLAINABLE' ? '✅' : '⚠️'} Signal Clarity: ${clarity}${clarityReason ? '\n   ↳ ' + clarityReason : ''}`
+    : null;
+
+  // TF alignment with plain explanation
+  const tfAlignLabel = tfH.conflictType === 'FULL_ALIGNMENT'
+    ? `✅ TF Alignment: FULL — 15m + 1h + 4h all agree direction`
+    : tfH.conflictType === 'LOCAL_PULLBACK'
+    ? `🟡 TF Alignment: LOCAL PULLBACK — short-term dip inside bullish trend`
+    : tfH.conflictType === 'FULL_BEARISH'
+    ? `🔴 TF Alignment: BEARISH — timeframes turning down`
+    : tfH.conflictType
+    ? `⚠️ TF Alignment: ${tfH.conflictType}`
+    : null;
+
   const instBlock = [
     `🏛 Institutional Intelligence`,
     `${verdEmoji} Verdict: ${verdict} (${inst.verdict?.confidence ?? instGrade.iScore ?? '?'}/100)`,
-    tfH.conflictType ? `${tfH.conflictType === 'FULL_ALIGNMENT' ? '✅' : '⚠️'} TF Alignment: ${tfH.conflictType}` : null,
-    inst.conflicts?.signalClarity ? `${inst.conflicts.signalClarity === 'CLEAR' || inst.conflicts.signalClarity === 'EXPLAINABLE' ? '✅' : '⚠️'} Signal Clarity: ${inst.conflicts.signalClarity}` : null,
+    tfAlignLabel,
+    clarityLine,
     contradiction || null,
     bullishPts.length ? `✅ Bullish:\n${bullishPts.map(p => ` · ${p}`).join('\n')}` : null,
     mmTrap ? `⚠️ MM Trap detected — fake breakout risk` : null,
