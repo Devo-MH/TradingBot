@@ -559,62 +559,8 @@ bot.on('callback_query', async (query) => {
       const symbol = data.replace('sig_full_', '');
       const cached = signalCache.get(symbol);
       if (!cached) { await send(uid, `⚠️ Signal for ${symbol} expired.`); return; }
-      const r          = cached;
-      const absorption = r._instLayer?.hiddenFlow?.confidence ?? 0;
-      const obRatio    = r.orderBook?.ratio ?? r.instGrade?.obRatio;
-      const tf         = r._instLayer?.tfHierarchy;
-      const flowType   = r._instLayer?.hiddenFlow?.type ?? null;
-      const verdict    = r._instLayer?.verdict?.verdict ?? 'WATCH';
-      const iScore     = r.instGrade?.iScore ?? 0;
-
-      // Flow type with emoji warning
-      const flowLabel = flowType === 'HIDDEN_SELLER'
-        ? `⚠️ HIDDEN SELLER — large entity selling into every push`
-        : flowType === 'HIDDEN_BUYER'
-        ? `✅ HIDDEN BUYER — large entity accumulating quietly`
-        : flowType ?? 'None detected';
-
-      // Contradiction banner: score says buy but flow says sell
-      const contradiction = (flowType === 'HIDDEN_SELLER' && iScore >= 70)
-        ? `⚠️ *Score conflict:* High score (${iScore}/100) but Hidden Seller detected.\nThis can mean the scanner sees structure, but smart money is distributing.\n*Treat as WATCH, not a confident entry.*\n━━━━━━━━━━━━━━━━━━━━━━\n`
-        : '';
-
-      // Timeframe display with readable labels
-      const tf15 = tf?.tf15m?.trend ?? 'N/A';
-      const tf1h = tf?.tf1h?.trend  ?? 'N/A';
-      const tf4h = tf?.tf4h?.trend  ?? 'N/A (no data)';
-      const tfLine = tf
-        ? ` · Alignment: ${tf.conflictType ?? 'UNKNOWN'}\n · 15m: ${tf15} | 1h: ${tf1h} | 4h: ${tf4h}`
-        : ' · No TF data';
-
-      // Verdict emoji
-      const verdictEmoji = { HIGH_CONVICTION: '🔥', BUY: '✅', WATCH: '👁', WAIT: '⏳', AVOID: '🚫' }[verdict] ?? '⚪';
-
-      // OB ratio warning (weak book even with hidden buyer)
-      const obWarnLine = obRatio != null && obRatio < 1.0
-        ? `\n⚠️ OB ratio ${obRatio.toFixed(2)}x — sellers slightly outweigh buyers in order book. Wait for volume confirmation before entering.`
-        : '';
-
-      const bt = '`';
-      await send(uid,
-        `📊 *Full Analysis — ${symbol}*\n` +
-        `━━━━━━━━━━━━━━━━━━━━━━\n` +
-        (contradiction ? contradiction + '\n' : '') +
-        `Score: *${iScore}/100*   Verdict: ${verdictEmoji} *${verdict}*\n` +
-        `\n💰 Smart Money:\n` +
-        ` · Absorption: ${absorption}/100  ${absorption >= 90 ? '🔥 Max' : absorption >= 70 ? '✅ Strong' : absorption >= 50 ? '🟡 Moderate' : '⚪ Weak'}\n` +
-        ` · Flow type:  ${flowLabel}\n` +
-        (obRatio ? ` · OB ratio:   ${obRatio.toFixed(2)}x bids${obRatio < 1 ? ' ⚠️' : ''}\n` : '') +
-        obWarnLine +
-        `\n⏱ Timeframes:\n` +
-        tfLine + '\n' +
-        `\n🏗 Structure:\n` +
-        ` · Spring: ${r.spring?.spring ? '✅ Yes' : '—'}\n` +
-        ` · Shakeout: ${r._instLayer?.shakeout?.shakeout ? '✅ Yes' : '—'}\n` +
-        ` · MM Trap: ${r._instLayer?.mmTrap?.trap ? '⚠️ Yes — fake breakout risk' : '—'}\n` +
-        ` · Explosion readiness: ${r.explosionReadiness?.score ?? '?'}/100\n` +
-        `\n🎯 Targets if entering:\n` +
-        ` SL: ${bt}${bridge.fmtPrice(r.sl)}${bt} | TP1: ${bt}${bridge.fmtPrice(r.tp1)}${bt} | TP2: ${bt}${bridge.fmtPrice(r.tp2)}${bt}`,
+      const r = cached;
+      await send(uid, buildFullAnalysis(r),
         {
           inline_keyboard: [[
             { text: '✅ I want to enter',  callback_data: `sig_enter_${symbol}` },
@@ -965,6 +911,141 @@ async function broadcastSignal(scannerResult) {
   } catch (e) {
     console.error('[Broadcast]', e.message);
   }
+}
+
+function buildFullAnalysis(r) {
+  const bt = '`';
+  const sep = '――――――――――――――――――';
+
+  // ── Identity ──────────────────────────────────────────────────────────────
+  const iScore         = r.instGrade?.iScore ?? 0;
+  const checklistScore = r.instGrade?.checklistScore;
+  const verdict        = r._instLayer?.verdict?.verdict ?? 'WATCH';
+  const verdictEmoji   = { HIGH_CONVICTION: '🔥', BUY: '✅', WATCH: '👁', WAIT: '⏳', AVOID: '🚫' }[verdict] ?? '⚪';
+  const grade          = bridge.scoreToGrade(iScore);
+  const classLabel     = r.classification?.includes('EXPLOSIVE') ? '🔥 EXPLOSIVE'
+    : r.classification?.includes('STRONG') ? '💪 STRONG SETUP'
+    : r.classification?.includes('EARLY')  ? '📈 EARLY SETUP'
+    : r.classification?.includes('ACCUM')  ? '📊 ACCUMULATION'
+    : '📊 SETUP';
+  const scoreLabel = checklistScore != null ? `${checklistScore}` : `${iScore}/100`;
+
+  // ── Indicators ────────────────────────────────────────────────────────────
+  const hurst   = r.hurst;
+  const tsmom   = r.tsmom;
+  const atrPct  = r.atrPct;
+  const volZ    = r.volZ?.ratio ?? r.volZ?.z ?? 0;
+  const atrCoiling = atrPct != null && parseFloat(atrPct) < 1.0;
+
+  const hurstLine = hurst != null
+    ? `📊 H=${hurst.toFixed(2)} ${hurst >= 0.9 ? '🔥 exceptional trending' : hurst >= 0.85 ? '✅ strong trending' : hurst >= 0.7 ? '🟡 moderate' : '⚪ weak'}`
+    : null;
+  const tsmomLine = tsmom != null
+    ? `📈 TSMOM=${tsmom.toFixed(1)} ${tsmom >= 0.9 ? '📈 max bullish' : tsmom >= 0.5 ? '🟡 bullish' : '📉 bearish'}`
+    : null;
+  const atrLine = atrPct != null
+    ? `📐 ATR=${parseFloat(atrPct).toFixed(2)}% ${atrCoiling ? '🗜️ coiling — compressed for explosion' : parseFloat(atrPct) <= 1.8 ? '✅ normal' : '⚡ volatile'}`
+    : null;
+  const volZLine = `📦 Vol Z=${volZ.toFixed(2)} ${volZ >= 4 ? '🚀 extreme surge' : volZ >= 2 ? '🔥 high anomaly' : volZ >= 1.5 ? '📈 elevated' : volZ < 0.5 ? '⚪ stealth' : '➡️ normal'}`;
+
+  // ── Signals list ──────────────────────────────────────────────────────────
+  const signals    = r.signals ?? [];
+  const sigLines   = signals.slice(0, 8).map(s => ` · ${s}`).join('\n');
+
+  // ── Order book ────────────────────────────────────────────────────────────
+  const obRatio = r.orderBook?.ratio ?? r.instGrade?.obRatio;
+  const obBids  = r.orderBook?.bids  ?? 0;
+  const obAsks  = r.orderBook?.asks  ?? 0;
+  const fmtK    = v => v >= 1e6 ? (v/1e6).toFixed(1)+'M' : v >= 1000 ? (v/1000).toFixed(1)+'K' : v.toFixed(0);
+  const obLabel = obRatio == null ? '' : obRatio >= 3 ? '🔥 Strong bid dominance'
+    : obRatio >= 2   ? '✅ Bids dominating'
+    : obRatio >= 1.2 ? '🟡 Mild bid advantage'
+    : obRatio >= 0.9 ? '➡️ Balanced — watch for seller re-entry'
+    : '⚠️ Sellers outweigh buyers — wait for volume confirm';
+  const obLine = obBids > 0 && obAsks > 0
+    ? `Bids: $${fmtK(obBids)} | Asks: $${fmtK(obAsks)} | Ratio: ${obRatio.toFixed(2)}x\n · ${obLabel}`
+    : obRatio != null ? `Ratio: ${obRatio.toFixed(2)}x — ${obLabel}` : 'No data';
+
+  // ── Volume direction ──────────────────────────────────────────────────────
+  const volRatio   = parseFloat(r.volRatio ?? 1);
+  const volIntent  = r.volIntent ?? r._raw?.volIntent ?? '';
+  const volDirLabel = volRatio >= 3 ? '🚀 SURGING' : volRatio >= 1.5 ? '📈 RISING' : volRatio >= 0.8 ? '➡️ STABLE' : '📉 DECLINING';
+  const volLine    = `${volRatio.toFixed(1)}x avg ${volDirLabel}${volIntent ? ' — ' + volIntent : ''}`;
+
+  // ── Context ───────────────────────────────────────────────────────────────
+  const expansionType  = r.expansion?.expansionType ?? r._raw?.ppExpansion ?? r._raw?.expansionType ?? '';
+  const action         = r._raw?.action ?? '';
+  const session        = r.session ?? '';
+  const sessionWeight  = r.sessionWeight ?? 0;
+  const sessionEmoji   = { EUROPE: '🌍', US: '🇺🇸', ASIA: '🌏' }[session] ?? '🌐';
+  const instConf       = r._raw?.instConfidence ?? iScore;
+  const instClass      = r._raw?.instClass ?? (instConf >= 90 ? 'EXPLOSIVE' : instConf >= 70 ? 'CLEAN' : 'RISKY');
+  const absorption     = r._instLayer?.hiddenFlow?.confidence ?? r._raw?.absorption ?? 0;
+  const flowType       = r._instLayer?.hiddenFlow?.type ?? null;
+  const mmTrap         = r._instLayer?.mmTrap?.trap ?? false;
+
+  // ── Contradiction warning ─────────────────────────────────────────────────
+  const contradiction = (flowType === 'HIDDEN_SELLER' && iScore >= 70)
+    ? `⚠️ Score conflict: High inst. confidence but Hidden Seller detected.\nTreat as WATCH — smart money may be distributing.\n${sep}\n`
+    : '';
+
+  // ── Entry plan ────────────────────────────────────────────────────────────
+  const pct = (a, b) => b && a ? ((a - b) / b * 100).toFixed(1) : null;
+  const confirmPct   = pct(r.confirmAbove, r.entry);
+  const slPct        = pct(r.sl, r.entry);
+  const tp1Pct       = pct(r.tp1, r.entry);
+  const tp2Pct       = pct(r.tp2, r.entry);
+  const moonPct      = pct(r.moonPrice, r.entry);
+  const triggerLabel = r.triggerDistance != null
+    ? `\n · ${parseFloat(r.triggerDistance).toFixed(1)}% to breakout — ${parseFloat(r.triggerDistance) <= 0.5 ? 'imminent 🎯' : parseFloat(r.triggerDistance) <= 1.5 ? 'very close' : 'approaching'}`
+    : '';
+
+  // ── Structure ─────────────────────────────────────────────────────────────
+  const structParts = [];
+  if (r.spring?.spring)                      structParts.push('✅ Wyckoff Spring');
+  if (r._instLayer?.shakeout?.shakeout)      structParts.push('✅ Shakeout detected');
+  if (mmTrap)                                structParts.push('⚠️ MM Trap risk');
+  if (r.explosionReadiness?.score >= 70)     structParts.push(`💥 Explosion readiness: ${r.explosionReadiness.score}/100`);
+  if (r.fbCheck?.brokeHigh && !r.fbCheck?.isFake) structParts.push('✅ Breakout confirmed');
+
+  const lines = [
+    `📊 *Full Analysis — ${r.symbol}*`,
+    `━━━━━━━━━━━━━━━━━━━━━━`,
+    contradiction,
+    `${classLabel} | Score: *${scoreLabel}* | ${verdictEmoji} *${verdict}*`,
+    ``,
+    `📊 Indicators Breakdown:`,
+    hurstLine,
+    tsmomLine,
+    atrLine,
+    volZLine,
+    ``,
+    sep,
+    signals.length ? `🔍 Signals Detected:\n${sigLines}` : null,
+    signals.length ? sep : null,
+    ``,
+    `💰 Order Book:\n · ${obLine}`,
+    ``,
+    `📦 Volume: ${volLine}`,
+    expansionType ? `📐 Expansion: ${expansionType}` : null,
+    action        ? `🎯 Action: ${action}` : null,
+    session       ? ` · ${sessionEmoji} Session: ${session}${sessionWeight ? ' (weight: +' + sessionWeight + ')' : ''}` : null,
+    `💼 Inst. Confidence: ${instConf}/100 — ${instClass}`,
+    absorption >= 50 ? `🧲 Absorption: ${absorption}/100 ${absorption >= 90 ? '🔥 Max' : absorption >= 70 ? '✅ Strong' : '🟡 Moderate'}` : null,
+    structParts.length ? ` · ${structParts.join('  ·  ')}` : null,
+    ``,
+    sep,
+    `📋 Entry Plan:`,
+    r.confirmAbove ? ` · Confirm above: ${bt}${bridge.fmtPrice(r.confirmAbove)}${bt}${confirmPct ? ' (+' + confirmPct + '%)' : ''} on strong volume` : null,
+    r.sl           ? ` · Stop: ${bt}${bridge.fmtPrice(r.sl)}${bt}${slPct ? ' (' + slPct + '%)' : ''}` : null,
+    r.tp1          ? ` · TP1: ${bt}${bridge.fmtPrice(r.tp1)}${bt}${tp1Pct ? ' (+' + tp1Pct + '%)' : ''} → sell 50% here` : null,
+    r.tp2          ? ` · TP2: ${bt}${bridge.fmtPrice(r.tp2)}${bt}${tp2Pct ? ' (+' + tp2Pct + '%)' : ''} → move stop to entry` : null,
+    r.moonPrice    ? ` · Moon: ${bt}${bridge.fmtPrice(r.moonPrice)}${bt}${moonPct ? ' (+' + moonPct + '%)' : ''} → trail stop` : null,
+    triggerLabel   || null,
+    hurst != null ? `\n📈 Hurst H=${hurst.toFixed(2)} — ${hurst >= 0.9 ? 'exceptional' : hurst >= 0.85 ? 'strong' : 'moderate'} trending structure` : null,
+  ].filter(l => l !== null && l !== '').join('\n');
+
+  return lines;
 }
 
 function buildChannelPost(r, extras) {
