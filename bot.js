@@ -35,6 +35,7 @@ const risk       = require('./src/riskEngine');
 const news       = require('./src/newsService');
 const sector     = require('./src/sectorMomentum');
 const { adapt }  = require('./src/scannerAdapter');
+const sigHistory = require('./src/signalHistory');
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN ?? process.env.BOT_TOKEN;
@@ -245,11 +246,13 @@ bot.onText(/\/status/, async (msg) => {
     `Status: ${status}`,
     {
       inline_keyboard: [[
-        { text: '📊 My stats',      callback_data: 'show_stats'     },
-        { text: '👀 Watchlist',     callback_data: 'show_watchlist'  },
+        { text: '📊 My stats',        callback_data: 'show_stats'     },
+        { text: '👀 Watchlist',       callback_data: 'show_watchlist'  },
       ], [
-        { text: '🌡️ Risk heat',   callback_data: 'show_heat'       },
-        { text: '🔄 Sectors',       callback_data: 'show_sectors'    },
+        { text: '🌡️ Risk heat',     callback_data: 'show_heat'       },
+        { text: '🔄 Sectors',         callback_data: 'show_sectors'    },
+      ], [
+        { text: '📈 Signal Report',   callback_data: 'show_report'    },
       ]],
     }
   );
@@ -261,6 +264,14 @@ bot.onText(/\/stats/, async (msg) => {
   const uid = msg.chat.id;
   if (!guardOnboarded(uid)) return;
   await send(uid, perf.buildStatsSummary(uid));
+});
+
+// ─── /report ──────────────────────────────────────────────────────────────────
+
+bot.onText(/\/report/, async (msg) => {
+  const uid = msg.chat.id;
+  if (!guardOnboarded(uid)) return;
+  await send(uid, sigHistory.buildReport(25));
 });
 
 // ─── /watchlist ───────────────────────────────────────────────────────────────
@@ -474,6 +485,7 @@ bot.onText(/\/help/, async (msg) => {
     `*Trading:*\n` +
     ` /status — open trades + portfolio\n` +
     ` /stats — win rate, P&L, coaching\n` +
+    ` /report — signal history vs what actually happened\n` +
     ` /track SYMBOL PRICE — manually track a trade\n` +
     ` /untrack SYMBOL — stop tracking\n` +
     ` /tracked — all open positions\n\n` +
@@ -731,10 +743,11 @@ bot.on('callback_query', async (query) => {
     }
 
     // ── PORTFOLIO / STATS ─────────────────────────────────────────────────────
-    if (data === 'show_stats')     { await send(uid, perf.buildStatsSummary(uid));       return; }
+    if (data === 'show_stats')     { await send(uid, perf.buildStatsSummary(uid));         return; }
     if (data === 'show_watchlist') { await send(uid, watchlist.buildWatchlistSummary(uid)); return; }
     if (data === 'show_heat')      { await send(uid, risk.buildHeatSummary(uid));           return; }
     if (data === 'show_sectors')   { await send(uid, sector.buildSectorCard());             return; }
+    if (data === 'show_report')    { await send(uid, sigHistory.buildReport(25));           return; }
 
     // ── PROFILE EDITS ─────────────────────────────────────────────────────────
     if (data === 'profile_edit_risk') {
@@ -904,6 +917,7 @@ async function broadcastSignal(scannerResult) {
     ]);
     const extras = { newsSummary, rotationLine, vwap };
     cacheSignal(scannerResult, extras);
+    sigHistory.recordSignal(scannerResult);
 
     if (channelId) {
       try {
@@ -1016,6 +1030,44 @@ async function runMonitorLoop() {
   );
 }
 
+// ─── SIGNAL OUTCOME RESOLVER ──────────────────────────────────────────────────
+// Runs every 15 min. Fetches current price for each pending signal and
+// marks it TP1_HIT / TP2_HIT / SL_HIT / EXPIRED automatically.
+
+async function resolveSignalOutcomes() {
+  const pending = sigHistory.getPendingSignals();
+  if (!pending.length) return;
+
+  const MAX_AGE = 7 * 24 * 60 * 60 * 1000;
+
+  for (const sig of pending) {
+    try {
+      // Expire old signals
+      if (Date.now() - sig.timestamp > MAX_AGE) {
+        sigHistory.resolveSignal(sig.id, 'EXPIRED', null);
+        continue;
+      }
+
+      const price = await getPrice(sig.symbol);
+      if (!price) continue;
+
+      sigHistory.updateMaxReached(sig.id, price);
+
+      if (sig.tp2 && price >= sig.tp2) {
+        sigHistory.resolveSignal(sig.id, 'TP2_HIT', price);
+      } else if (sig.tp1 && price >= sig.tp1 && sig.outcome !== 'TP1_HIT') {
+        sigHistory.resolveSignal(sig.id, 'TP1_HIT', price);
+      } else if (sig.sl && price <= sig.sl) {
+        sigHistory.resolveSignal(sig.id, 'SL_HIT', price);
+      }
+
+      await sleep(300); // rate-limit Binance calls
+    } catch (e) {
+      console.error('[Resolver]', sig.symbol, e.message);
+    }
+  }
+}
+
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 
 function normalizeSymbol(s) {
@@ -1042,8 +1094,12 @@ console.log('━━━━━━━━━━━━━━━━━━━━━━�
 // Start monitor loop every 5 minutes
 setInterval(runMonitorLoop, CONFIG.SCAN_INTERVAL_MS);
 
+// Resolve signal outcomes every 15 minutes
+setInterval(resolveSignalOutcomes, 15 * 60 * 1000);
+
 // Run once immediately on startup
 runMonitorLoop().catch(e => console.error('[Monitor startup]', e.message));
+resolveSignalOutcomes().catch(e => console.error('[Resolver startup]', e.message));
 
 console.log('  Bot polling started. Waiting for users...\n');
 
