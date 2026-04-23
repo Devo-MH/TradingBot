@@ -37,6 +37,7 @@ const sector     = require('./src/sectorMomentum');
 const { adapt }  = require('./src/scannerAdapter');
 const sigHistory = require('./src/signalHistory');
 const regime     = require('./src/marketRegime');
+const pattern    = require('./src/patternTracker');
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN ?? process.env.BOT_TOKEN;
@@ -1042,15 +1043,35 @@ async function broadcastSignal(scannerResult) {
       sigHistory.recordFeatured(scannerResult);
     }
 
+    // Record pattern snapshot BEFORE sending so compare() sees the previous snap
+    const patternUpdate = pattern.buildPatternUpdate(scannerResult);
+    pattern.record(scannerResult);
+
     for (const { userId, isWatched, alertType } of recipients) {
       const alert = alertType === 'accumulation'
         ? bridge.buildAccumulationAlert(scannerResult, userId, isWatched, extras)
         : bridge.buildSignalAlert(scannerResult, userId, isWatched, extras);
       await send(userId, alert.text, alert.inlineKeyboard);
+
+      // Send pattern update immediately after the signal if meaningful
+      if (patternUpdate) {
+        await sleep(400);
+        await send(userId, patternUpdate.text);
+      }
+
       if (isWatched && alertType !== 'accumulation') {
         watchlist.markTriggered(userId, scannerResult.symbol);
       }
       await sleep(200);
+    }
+
+    // Also post strong improvements to featured channel
+    if (CONFIG.FEATURED_CHANNEL && patternUpdate?.verdict === 'STRONG_IMPROVEMENT') {
+      try {
+        await bot.sendMessage(CONFIG.FEATURED_CHANNEL, patternUpdate.text, { parse_mode: 'Markdown' });
+      } catch (e) {
+        console.error('[Pattern→Featured]', e.response?.data?.description ?? e.message);
+      }
     }
   } catch (e) {
     console.error('[Broadcast]', e.message);
