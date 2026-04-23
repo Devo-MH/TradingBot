@@ -346,6 +346,100 @@ function buildOBWarning(r) {
   return '';
 }
 
+// ─── SETUP CLASSIFIER ────────────────────────────────────────────────────────
+
+/**
+ * Classifies the setup type and timing urgency using the Pump Detection Guide rules.
+ *
+ * Priority order:
+ *   1. Distribution Warning  (high vol + falling CVD → danger)
+ *   2. Stealth Accumulation  (low vol + hidden buyer → patience)
+ *   3. Fast Move             (golden combo → act now)
+ *   4. Delayed Explosion     (building → entry window open)
+ *   5. Moon Setup            (moonData pattern → long hold)
+ *   6. Standard              (default)
+ *
+ * Returns { type, label, timing, urgency, note }
+ */
+function classifySetup(r) {
+  const volRatio   = parseFloat(r.volZ?.ratio ?? r.volRatio ?? 1);
+  const intent     = r.volIntent?.intent ?? '';
+  const flowRatio  = parseFloat(r.lf?.flowRatio ?? r._raw?.lf?.flowRatio ?? 0);
+  const energy     = parseFloat(r.candleEnergy ?? r._raw?.candleEnergy ?? r._raw?.expansion?.candleEnergy ?? 0);
+  const trigDist   = parseFloat(r.triggerDistance ?? r.breakoutDistance ?? 99);
+  const mmTrap     = r._instLayer?.mmTrap?.trap ?? false;
+  const hiddenSell = r._instLayer?.hiddenFlow?.type === 'HIDDEN_SELLER';
+  const hiddenBuy  = r._instLayer?.hiddenFlow?.type === 'HIDDEN_BUYER';
+  const bullishCVD = intent === 'BULLISH' || hiddenBuy || intent.includes('ACCUM');
+
+  // 1. Distribution Warning — highest priority, flag before anything else
+  if (mmTrap || (volRatio >= 1.5 && hiddenSell)) {
+    return {
+      type: 'DISTRIBUTION', label: '⚠️ Distribution Warning',
+      timing: null, urgency: 'DANGER',
+      note: 'High vol + falling CVD — possible sell trap',
+    };
+  }
+
+  // 2. Stealth Accumulation — low vol + hidden buyer = whale phase
+  if (volRatio < 1.2 && (hiddenBuy || intent.includes('ACCUM'))) {
+    return {
+      type: 'STEALTH_ACCUM', label: '🕵️ Stealth Accumulation',
+      timing: '4h–24h', urgency: 'LOW',
+      note: 'Whales accumulating quietly — no rush to enter',
+    };
+  }
+
+  // 3. Fast Move — golden combination: high vol + CVD + flow + near breakout
+  const nearBreakout = trigDist <= 1.0;
+  const highVol      = volRatio >= 2;
+  const strongFlow   = flowRatio >= 1.5;
+  const activeEnergy = energy >= 6;
+  const goldenCount  = [highVol, bullishCVD, strongFlow, nearBreakout].filter(Boolean).length;
+
+  if (goldenCount >= 3 && activeEnergy) {
+    return {
+      type: 'FAST_MOVE', label: '⚡ Fast Move',
+      timing: '15min–2h', urgency: 'HIGH',
+      note: 'Golden combo active — move likely imminent',
+    };
+  }
+
+  // 3b. Fast Move without full golden combo but vol + CVD align near breakout
+  if (volRatio >= 1.5 && bullishCVD && nearBreakout) {
+    return {
+      type: 'FAST_MOVE', label: '⚡ Fast Move',
+      timing: '15min–2h', urgency: 'HIGH',
+      note: 'Volume + CVD aligned at breakout zone',
+    };
+  }
+
+  // 4. Delayed Explosion — decent vol + CVD but not yet at breakout or energy low
+  if (volRatio >= 1.2 && bullishCVD) {
+    return {
+      type: 'DELAYED', label: '💣 Delayed Explosion',
+      timing: '2h–12h', urgency: 'MEDIUM',
+      note: 'Building momentum — entry window open',
+    };
+  }
+
+  // 5. Moon Setup — moonData or expansion pattern present
+  if (r.moonData || r._raw?.moonData) {
+    return {
+      type: 'MOON', label: '🌕 Moon Setup',
+      timing: '4h–24h', urgency: 'LOW',
+      note: 'Longer hold expected — use wider stops',
+    };
+  }
+
+  // 6. Default
+  return {
+    type: 'STANDARD', label: '📊 Standard Setup',
+    timing: '1h–12h', urgency: 'MEDIUM',
+    note: 'Moderate conditions — wait for confirmation',
+  };
+}
+
 // ─── ENTRY ALERT MESSAGE (trade signal) ──────────────────────────────────────
 
 /**
@@ -369,6 +463,10 @@ function buildSignalAlert(r, userId, isWatched = false, extras = {}) {
   const cvdLine  = buildCVDLine(r);
   const obWarn   = buildOBWarning(r);
   const vwapLine = buildVWAPLine(r, extras.vwap);
+  const setup    = classifySetup(r);
+  const setupLine = setup.timing
+    ? `⏱ *${setup.label}* — expect move in *${setup.timing}*  _(${setup.note})_`
+    : `${setup.label}  _(${setup.note})_`;
 
   // Session
   const session = r.session ?? r.instGrade?.session ?? '';
@@ -396,6 +494,7 @@ function buildSignalAlert(r, userId, isWatched = false, extras = {}) {
     dRow     ? `💧  ${dRow}` : null,
     vwapLine || null,
     cvdLine,
+    setupLine,
     ``,
     r.sl && r.tp1
       ? `🎯  SL: \`${fmtPrice(r.sl)}\` *(${slPct})*  TP1: \`${fmtPrice(r.tp1)}\` *(${tp1Pct})*  TP2: \`${fmtPrice(r.tp2)}\` *(${tp2Pct})*  🌕 \`${fmtPrice(r.moonPrice)}\` *(${moonPct})*`
@@ -806,6 +905,12 @@ function buildExplainMessage(r, extras = {}) {
     ? `• Smart money: ${absorption}/100 — ${absorption >= 80 ? 'heavy institutional buying detected' : 'moderate institutional interest'}`
     : null;
 
+  // Setup type
+  const setup     = classifySetup(r);
+  const setupLine2 = setup.timing
+    ? `• Setup type: *${setup.label}* — expect move in *${setup.timing}* _(${setup.note})_`
+    : `• Setup type: ${setup.label} _(${setup.note})_`;
+
   // Recommendation
   let recommend;
   if (mmTrap || verdict === 'AVOID') {
@@ -834,6 +939,7 @@ function buildExplainMessage(r, extras = {}) {
     volLine,
     absLine,
     vwapLine,
+    setupLine2,
     ``,
     `📋 *My recommendation:*`,
     recommend,
@@ -850,6 +956,7 @@ function buildExplainMessage(r, extras = {}) {
 module.exports = {
   scoreToGrade,
   isAccumulationSetup,
+  classifySetup,
   buildSignalAlert,
   buildAccumulationAlert,
   buildEntryPlan,
