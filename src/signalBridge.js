@@ -540,24 +540,24 @@ function buildSignalAlert(r, userId, isWatched = false, extras = {}) {
     ? {
         inline_keyboard: [
           [
-            { text: '⚡ Quick Summary',   callback_data: `sig_quick_${r.symbol}`   },
-            { text: '📊 Full Analysis',   callback_data: `sig_full_${r.symbol}`    },
+            { text: '⚡ Quick Summary',   callback_data: `sig_quick_${r.symbol}`    },
+            { text: '📊 Full Analysis',   callback_data: `sig_full_${r.symbol}`     },
           ],
           [
-            { text: '💡 Explain simply',  callback_data: `sig_explain_${r.symbol}` },
-            { text: '👀 Watch it',        callback_data: `sig_watch_${r.symbol}`   },
+            { text: '🔰 Beginner Guide',  callback_data: `sig_beginner_${r.symbol}` },
+            { text: '👀 Watch it',        callback_data: `sig_watch_${r.symbol}`    },
           ],
           [
-            { text: '✅ Enter trade',     callback_data: `sig_enter_${r.symbol}`   },
-            { text: '❌ Skip',            callback_data: `sig_skip_${r.symbol}`    },
+            { text: '✅ Enter trade',     callback_data: `sig_enter_${r.symbol}`    },
+            { text: '❌ Skip',            callback_data: `sig_skip_${r.symbol}`     },
           ],
         ],
       }
     : {
         inline_keyboard: [[
-          { text: '💡 Explain simply',    callback_data: `sig_explain_${r.symbol}` },
-          { text: '📊 View Analysis',     callback_data: `sig_full_${r.symbol}`    },
-          { text: '👀 Watch it',          callback_data: `sig_watch_${r.symbol}`   },
+          { text: '🔰 Beginner Guide',    callback_data: `sig_beginner_${r.symbol}` },
+          { text: '📊 View Analysis',     callback_data: `sig_full_${r.symbol}`     },
+          { text: '👀 Watch it',          callback_data: `sig_watch_${r.symbol}`    },
         ]],
       };
 
@@ -881,6 +881,154 @@ function _checkCapacity(userId, snapshot) {
   return { allowed: true, reason: 'OK' };
 }
 
+// ─── BEGINNER GUIDE ──────────────────────────────────────────────────────────
+
+/**
+ * Full beginner-friendly signal breakdown.
+ * Zero jargon. One clear action. Dollar amounts. Exact steps.
+ */
+function buildBeginnerGuide(r, extras = {}, userId = null) {
+  const iScore     = r.instGrade?.iScore ?? 50;
+  const grade      = scoreToGrade(iScore);
+  const verdict    = r._instLayer?.verdict?.verdict ?? 'WATCH';
+  const mmTrap     = r._instLayer?.mmTrap?.trap ?? false;
+  const absorption = absorptionFromHiddenFlow(r);
+  const volRatio   = parseFloat(r.volZ?.ratio ?? r.volRatio ?? 1);
+  const setup      = classifySetup(r);
+  const sizes      = userId ? calcPositionSizes(userId) : null;
+  const vwap       = extras.vwap ?? r.fbCheck?.vwap;
+
+  // ── Confidence stars ─────────────────────────────────────────────────────
+  const stars = iScore >= 80 ? '⭐⭐⭐⭐⭐'
+    : iScore >= 65            ? '⭐⭐⭐⭐'
+    : iScore >= 45            ? '⭐⭐⭐'
+    : '⭐⭐';
+
+  // ── Single clear action ───────────────────────────────────────────────────
+  let action, actionEmoji, actionReason;
+
+  if (mmTrap) {
+    action      = 'SKIP THIS';
+    actionEmoji = '🚫';
+    actionReason = 'This looks like a fake move. Big players may be tricking buyers into entering before the price drops. Not worth the risk.';
+  } else if (verdict === 'AVOID') {
+    action      = 'SKIP THIS';
+    actionEmoji = '🚫';
+    actionReason = 'Too many signals are conflicting. The bot cannot confidently say this will go up. Skip and wait for a cleaner setup.';
+  } else if (verdict === 'WAIT' || setup.type === 'STEALTH_ACCUM') {
+    action      = 'WATCH — NOT YET';
+    actionEmoji = '👁';
+    actionReason = 'The setup is forming but not ready. Big players are accumulating quietly. Add to watchlist — the bot will notify you when the right moment arrives.';
+  } else if (grade === 'A+' || grade === 'A') {
+    action      = 'YOU CAN BUY';
+    actionEmoji = '✅';
+    actionReason = grade === 'A+'
+      ? 'This is a strong setup. Volume is high, big players are buying, and the timing looks good.'
+      : 'This is a good setup with solid signals. Not perfect, but the conditions favor a move up.';
+  } else {
+    action      = 'SMALL ENTRY OK';
+    actionEmoji = '🟡';
+    actionReason = 'Decent setup but not the strongest. If you want to enter, use a smaller amount than usual and be ready to exit quickly.';
+  }
+
+  // ── Plain-English market reading ──────────────────────────────────────────
+  const readings = [];
+
+  // Volume
+  if (volRatio >= 3) {
+    readings.push(`Volume: *${volRatio.toFixed(1)}x higher than normal* — a lot of people are suddenly interested in this coin right now.`);
+  } else if (volRatio >= 1.5) {
+    readings.push(`Volume: *${volRatio.toFixed(1)}x above normal* — more buyers than usual are stepping in.`);
+  } else {
+    readings.push(`Volume: *Normal* — no big surge yet. The move may be slower to develop.`);
+  }
+
+  // Smart money / CVD
+  if (mmTrap) {
+    readings.push(`Big players: *Selling quietly* — while price looks like it's going up, the actual buying pressure is falling. Classic trap.`);
+  } else if (absorption >= 80) {
+    readings.push(`Big players: *Heavy buying (${absorption}/100)* — institutions are absorbing supply. This often happens right before a big move.`);
+  } else if (absorption >= 50) {
+    readings.push(`Big players: *Moderate buying (${absorption}/100)* — some institutional interest detected.`);
+  } else {
+    readings.push(`Big players: *Neutral* — no clear signal of large player activity.`);
+  }
+
+  // VWAP (in plain English)
+  if (vwap && r.entry) {
+    const aboveVwap = r.entry >= vwap;
+    readings.push(aboveVwap
+      ? `Price position: *Above the 24h average price* — momentum is on your side.`
+      : `Price position: *Below the 24h average price* — price hasn't fully recovered yet. Wait for it to cross above for a stronger entry.`
+    );
+  }
+
+  // Timing
+  if (setup.timing) {
+    readings.push(`Expected move: *${setup.timing}* — ${setup.note}.`);
+  }
+
+  // Market regime
+  if (extras.regime) {
+    readings.push(`Overall market: ${extras.regime}`);
+  }
+
+  // ── Risk in dollar terms ─────────────────────────────────────────────────
+  let moneyBlock = null;
+  if (sizes && r.entry && r.sl && r.tp1) {
+    const riskAmt   = (sizes.recommended * ((r.entry - r.sl) / r.entry)).toFixed(0);
+    const rewardAmt = (sizes.recommended * ((r.tp1 - r.entry) / r.entry)).toFixed(0);
+    const rrRatio   = ((r.tp1 - r.entry) / (r.entry - r.sl)).toFixed(1);
+    moneyBlock = (
+      `With *$${sizes.recommended}* invested:\n` +
+      ` · If stop hits → you lose *$${riskAmt}*\n` +
+      ` · If TP1 hits → you gain *+$${rewardAmt}*\n` +
+      ` · For every $1 risked, possible gain: $${rrRatio}`
+    );
+  }
+
+  // ── Exact steps ──────────────────────────────────────────────────────────
+  let steps = null;
+  if (action !== 'SKIP THIS' && action !== 'WATCH — NOT YET' && r.entry && r.sl && r.tp1) {
+    const sizeLabel = sizes ? `$${sizes.recommended}` : 'your planned amount';
+    steps = (
+      `*What to do — step by step:*\n` +
+      ` 1️⃣ Buy *${sizeLabel}* worth of ${r.symbol.replace('USDT', '')} at around \`${fmtPrice(r.entry)}\`\n` +
+      ` 2️⃣ Immediately set a stop loss at \`${fmtPrice(r.sl)}\` — this is your safety net\n` +
+      ` 3️⃣ When price hits \`${fmtPrice(r.tp1)}\`, sell *half* of your coins and move stop to your entry price\n` +
+      ` 4️⃣ Let the remaining half run to \`${fmtPrice(r.tp2 ?? r.tp1)}\`\n` +
+      ` 5️⃣ If price drops to your stop before hitting TP1 — exit. That's your plan working correctly.`
+    );
+  } else if (action === 'WATCH — NOT YET') {
+    steps = (
+      `*What to do:*\n` +
+      ` 1️⃣ Tap "👀 Watch it" to add this coin to your watchlist\n` +
+      ` 2️⃣ The bot will alert you automatically when the entry moment arrives\n` +
+      ` 3️⃣ Do NOT enter now — wait for the alert`
+    );
+  }
+
+  const lines = [
+    `🔰 *Beginner Guide — ${r.symbol}*`,
+    `━━━━━━━━━━━━━━━━━━━━━━`,
+    `Confidence: ${stars}  (${iScore}/100)`,
+    ``,
+    `${actionEmoji} *Action: ${action}*`,
+    actionReason,
+    ``,
+    `*What's happening right now:*`,
+    ...readings.map(l => ` · ${l}`),
+    ``,
+    moneyBlock,
+    ``,
+    steps,
+    ``,
+    `_Never invest money you can't afford to lose. Always set a stop loss._`,
+  ].filter(l => l !== null).join('\n');
+
+  return lines;
+}
+
 // ─── SIMPLE EXPLANATION (for end users) ──────────────────────────────────────
 
 /**
@@ -987,6 +1135,7 @@ module.exports = {
   buildSignalAlert,
   buildAccumulationAlert,
   buildEntryPlan,
+  buildBeginnerGuide,
   buildExplainMessage,
   buildTP1Alert,
   buildWeakeningAlert,

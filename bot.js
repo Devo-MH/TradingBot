@@ -633,6 +633,14 @@ bot.on('callback_query', async (query) => {
       return;
     }
 
+    if (data.startsWith('sig_beginner_')) {
+      const symbol = data.replace('sig_beginner_', '');
+      const cached = signalCache.get(symbol);
+      if (!cached) { await send(uid, `⚠️ Signal for ${symbol} expired.`); return; }
+      await send(uid, bridge.buildBeginnerGuide(cached, cached._extras ?? {}, uid));
+      return;
+    }
+
     // ── ENTRY CONFIRMATION ───────────────────────────────────────────────────
     if (data.startsWith('enter_market_')) {
       const symbol = data.replace('enter_market_', '');
