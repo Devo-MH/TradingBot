@@ -41,10 +41,11 @@ const regime     = require('./src/marketRegime');
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN ?? process.env.BOT_TOKEN;
 const CONFIG = {
-  TELEGRAM_TOKEN  : TELEGRAM_TOKEN ?? 'YOUR_BOT_TOKEN_HERE',
-  CHANNEL_ID      : process.env.CHANNEL_ID ?? null,
-  SCAN_INTERVAL_MS: 5 * 60 * 1000,
-  BINANCE_HOSTS   : [
+  TELEGRAM_TOKEN    : TELEGRAM_TOKEN ?? 'YOUR_BOT_TOKEN_HERE',
+  CHANNEL_ID        : process.env.CHANNEL_ID ?? null,
+  FEATURED_CHANNEL  : process.env.FEATURED_CHANNEL_ID ?? '-1003632946008',
+  SCAN_INTERVAL_MS  : 5 * 60 * 1000,
+  BINANCE_HOSTS     : [
     'https://data-api.binance.vision',
     'https://api4.binance.com',
     'https://api3.binance.com',
@@ -890,6 +891,74 @@ function cacheSignal(scannerResult, extras = {}) {
   setTimeout(() => signalCache.delete(scannerResult.symbol), 30 * 60 * 1000);
 }
 
+// ─── FEATURED SIGNAL FILTER ──────────────────────────────────────────────────
+
+/**
+ * Returns true if the signal passes ALL quality gates for the featured channel.
+ * Gates (must ALL pass):
+ *   1. Score ≥ 80 (A+ grade)
+ *   2. Setup type is Fast Move or Delayed Explosion
+ *   3. CVD is bullish — no hidden seller, no MM trap
+ *   4. R:R ratio ≥ 2.5
+ *   5. Market regime is not BEAR
+ *   6. Not in cooldown (checked before this is called)
+ */
+function isFeaturedSignal(r, marketRegime) {
+  const iScore  = r.instGrade?.iScore ?? 0;
+  const mmTrap  = r._instLayer?.mmTrap?.trap ?? false;
+  const hidSell = r._instLayer?.hiddenFlow?.type === 'HIDDEN_SELLER';
+  const intent  = r.volIntent?.intent ?? '';
+  const setup   = bridge.classifySetup(r);
+  const rrRatio = r.sl && r.tp1 && r.entry
+    ? (r.tp1 - r.entry) / (r.entry - r.sl)
+    : 0;
+
+  if (iScore < 80)                                          return false;
+  if (!['FAST_MOVE', 'DELAYED'].includes(setup.type))      return false;
+  if (mmTrap || hidSell)                                    return false;
+  if (rrRatio < 2.5)                                        return false;
+  if (marketRegime?.regime === 'BEAR')                      return false;
+  if (intent === 'BEARISH' || intent.includes('DIST'))      return false;
+
+  return true;
+}
+
+function buildFeaturedPost(r, extras = {}) {
+  const iScore   = r.instGrade?.iScore ?? 0;
+  const setup    = bridge.classifySetup(r);
+  const rrRatio  = r.sl && r.tp1 && r.entry
+    ? ((r.tp1 - r.entry) / (r.entry - r.sl)).toFixed(1)
+    : '?';
+  const tp1Pct   = r.tp1  ? `+${((r.tp1  - r.entry) / r.entry * 100).toFixed(1)}%` : '';
+  const tp2Pct   = r.tp2  ? `+${((r.tp2  - r.entry) / r.entry * 100).toFixed(1)}%` : '';
+  const moonPct  = r.moonPrice ? `+${((r.moonPrice - r.entry) / r.entry * 100).toFixed(1)}%` : '';
+  const slPct    = r.sl   ? `-${((r.entry - r.sl)   / r.entry * 100).toFixed(1)}%` : '';
+  const bt       = '`';
+
+  const lines = [
+    `🌟 *FEATURED SIGNAL — ${r.symbol}*`,
+    `━━━━━━━━━━━━━━━━━━━━━━`,
+    `Passed all quality filters · Score *${iScore}/100*`,
+    ``,
+    `⏱ ${setup.label} — est. ${setup.timing ?? '?'} · ${setup.note}`,
+    extras.regime ? extras.regime : null,
+    ``,
+    `Entry:  ${bt}${bridge.fmtPrice(r.entry)}${bt}`,
+    `SL:     ${bt}${bridge.fmtPrice(r.sl)}${bt}  *(${slPct})*`,
+    `TP1:    ${bt}${bridge.fmtPrice(r.tp1)}${bt}  *(${tp1Pct})*`,
+    `TP2:    ${bt}${bridge.fmtPrice(r.tp2)}${bt}  *(${tp2Pct})*`,
+    r.moonPrice ? `Moon:   ${bt}${bridge.fmtPrice(r.moonPrice)}${bt}  *(${moonPct})*` : null,
+    ``,
+    `📐 R:R 1:${rrRatio}`,
+    extras.newsSummary  || null,
+    extras.rotationLine || null,
+    ``,
+    `_Only the strongest setups appear here._`,
+  ].filter(l => l !== null).join('\n');
+
+  return lines;
+}
+
 // ─── SCANNER INTEGRATION ─────────────────────────────────────────────────────
 // This function is called by the scanner loop in scanner_v6.js
 // (or from the scan loop below) once a valid signal is produced.
@@ -931,6 +1000,16 @@ async function broadcastSignal(scannerResult) {
         await bot.sendMessage(channelId, buildChannelPost(scannerResult, extras), { parse_mode: 'Markdown' });
       } catch (e) {
         console.error('[Channel]', e.response?.data?.description ?? e.message);
+      }
+    }
+
+    // Featured channel — only strongest signals, always delivered
+    if (CONFIG.FEATURED_CHANNEL && isFeaturedSignal(scannerResult, marketRegime)) {
+      try {
+        await bot.sendMessage(CONFIG.FEATURED_CHANNEL, buildFeaturedPost(scannerResult, extras), { parse_mode: 'Markdown' });
+        console.log(`[Featured] Sent ${scannerResult.symbol} (score ${scannerResult.instGrade?.iScore})`);
+      } catch (e) {
+        console.error('[Featured]', e.response?.data?.description ?? e.message);
       }
     }
 
