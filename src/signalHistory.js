@@ -17,7 +17,8 @@
 const fs   = require('fs');
 const path = require('path');
 
-const DATA_FILE = path.join(process.env.DATA_DIR || path.join(__dirname, '..', 'data'), 'signal_history.json');
+const DATA_FILE     = path.join(process.env.DATA_DIR || path.join(__dirname, '..', 'data'), 'signal_history.json');
+const FEATURED_FILE = path.join(process.env.DATA_DIR || path.join(__dirname, '..', 'data'), 'featured_history.json');
 const MAX_AGE_DAYS  = 7;
 const MAX_SIGNALS   = 1000;
 const DEDUPE_WINDOW = 60 * 60 * 1000; // 1h — don't double-record same symbol
@@ -209,6 +210,139 @@ function _fmt(v) {
   return n.toFixed(4);
 }
 
+// ─── FEATURED HISTORY ────────────────────────────────────────────────────────
+
+function loadFeatured() {
+  try {
+    if (fs.existsSync(FEATURED_FILE)) return JSON.parse(fs.readFileSync(FEATURED_FILE, 'utf8'));
+  } catch {}
+  return { signals: [] };
+}
+
+function saveFeatured(data) {
+  try { fs.writeFileSync(FEATURED_FILE, JSON.stringify(data, null, 2)); } catch {}
+}
+
+function recordFeatured(r) {
+  if (!r?.symbol || !r?.entry) return;
+  const data = loadFeatured();
+  const now  = Date.now();
+
+  const recent = data.signals.find(
+    s => s.symbol === r.symbol && (now - s.timestamp) < DEDUPE_WINDOW
+  );
+  if (recent) return;
+
+  data.signals.push({
+    id         : `${r.symbol}_${now}`,
+    symbol     : r.symbol,
+    entry      : r.entry,
+    sl         : r.sl   ?? null,
+    tp1        : r.tp1  ?? null,
+    tp2        : r.tp2  ?? null,
+    moon       : r.moonPrice ?? r.moon ?? null,
+    score      : r.instGrade?.iScore ?? 50,
+    timestamp  : now,
+    outcome    : 'PENDING',
+    exitPrice  : null,
+    maxReached : r.entry,
+    resolvedAt : null,
+  });
+
+  if (data.signals.length > MAX_SIGNALS) data.signals = data.signals.slice(-MAX_SIGNALS);
+  saveFeatured(data);
+}
+
+function updateFeaturedMaxReached(symbol, price) {
+  const data = loadFeatured();
+  const sig  = data.signals.find(s => s.symbol === symbol && s.outcome === 'PENDING');
+  if (!sig) return;
+  if (price > (sig.maxReached ?? 0)) { sig.maxReached = price; saveFeatured(data); }
+}
+
+function resolveFeatured(symbol, outcome, exitPrice) {
+  const data = loadFeatured();
+  const sig  = data.signals.find(s => s.symbol === symbol && (s.outcome === 'PENDING' || s.outcome === 'TP1_HIT'));
+  if (!sig) return;
+  sig.outcome    = outcome;
+  sig.exitPrice  = exitPrice;
+  sig.resolvedAt = Date.now();
+  saveFeatured(data);
+}
+
+function getPendingFeatured() {
+  return loadFeatured().signals.filter(s => s.outcome === 'PENDING' || s.outcome === 'TP1_HIT');
+}
+
+function buildFeaturedReport(limit = 50) {
+  const data       = loadFeatured();
+  const allSignals = data.signals;
+
+  if (!allSignals.length) {
+    return '🌟 *Featured Signal Report*\n\nNo featured signals recorded yet. Only A+ grade signals with strong R:R appear here.';
+  }
+
+  const allResolved = allSignals.filter(s => ['TP1_HIT', 'TP2_HIT', 'SL_HIT'].includes(s.outcome));
+  const allWins     = allResolved.filter(s => s.outcome === 'TP1_HIT' || s.outcome === 'TP2_HIT');
+  const allLosses   = allResolved.filter(s => s.outcome === 'SL_HIT');
+  const winRate     = allResolved.length > 0 ? ((allWins.length / allResolved.length) * 100).toFixed(0) : '—';
+
+  const avgWinPct = allWins.length > 0
+    ? (allWins.reduce((sum, s) => {
+        return sum + (s.exitPrice && s.entry ? (s.exitPrice - s.entry) / s.entry * 100 : 0);
+      }, 0) / allWins.length).toFixed(1)
+    : '—';
+
+  const avgLossPct = allLosses.length > 0
+    ? (allLosses.reduce((sum, s) => {
+        return sum + (s.exitPrice && s.entry ? (s.exitPrice - s.entry) / s.entry * 100 : 0);
+      }, 0) / allLosses.length).toFixed(1)
+    : '—';
+
+  const display = (limit === 0 ? allSignals : allSignals.slice(-limit)).reverse();
+
+  const lines = display.map(s => {
+    const age      = _ageLabel(s.timestamp);
+    const priceFmt = _fmt(s.entry);
+    const rrRatio  = s.sl && s.tp1 ? ((s.tp1 - s.entry) / (s.entry - s.sl)).toFixed(1) : '?';
+
+    if (s.outcome === 'TP2_HIT') {
+      const pct = s.exitPrice ? `+${((s.exitPrice - s.entry) / s.entry * 100).toFixed(1)}%` : '';
+      return `🏆 \`${s.symbol}\` @${priceFmt}  TP2 ✅✅  ${pct}  R:R 1:${rrRatio}  _(${age})_`;
+    }
+    if (s.outcome === 'TP1_HIT') {
+      const pct = s.tp1 ? `+${((s.tp1 - s.entry) / s.entry * 100).toFixed(1)}%` : '';
+      return `✅ \`${s.symbol}\` @${priceFmt}  TP1 hit  ${pct}  R:R 1:${rrRatio}  _(${age})_`;
+    }
+    if (s.outcome === 'SL_HIT') {
+      const pct = s.sl ? `-${((s.entry - s.sl) / s.entry * 100).toFixed(1)}%` : '';
+      return `❌ \`${s.symbol}\` @${priceFmt}  SL hit  ${pct}  _(${age})_`;
+    }
+    if (s.outcome === 'EXPIRED') {
+      const peakPct = s.maxReached && s.entry ? ((s.maxReached - s.entry) / s.entry * 100) : 0;
+      const peakStr = peakPct >= 0.1 ? `  peak: +${peakPct.toFixed(1)}%` : '';
+      return `⏰ \`${s.symbol}\` @${priceFmt}  Expired${peakStr}  _(${age})_`;
+    }
+    const peakPct = s.maxReached && s.entry ? ((s.maxReached - s.entry) / s.entry * 100) : 0;
+    const peakStr = peakPct >= 0.1 ? ` (peak: +${peakPct.toFixed(1)}%)` : '';
+    return `⏳ \`${s.symbol}\` @${priceFmt}  Pending${peakStr}  R:R 1:${rrRatio}  _(${age})_`;
+  });
+
+  const displayLabel = limit === 0 ? 'All' : `Last ${display.length}`;
+
+  return [
+    `🌟 *Featured Signal Report*`,
+    `━━━━━━━━━━━━━━━━━━━━━━`,
+    `Total featured: *${allSignals.length}*  |  Resolved: *${allResolved.length}*`,
+    `Win rate: *${winRate}%*  (${allWins.length}W / ${allLosses.length}L)`,
+    `Avg win: *+${avgWinPct}%*  |  Avg loss: *${avgLossPct}%*`,
+    `━━━━━━━━━━━━━━━━━━━━━━`,
+    ...lines,
+    ``,
+    `_${displayLabel} shown. Only A+ grade signals with R:R ≥ 1:2.5._`,
+  ].join('\n');
+}
+
 // ─── COOLDOWN ─────────────────────────────────────────────────────────────────
 
 /**
@@ -232,4 +366,9 @@ module.exports = {
   updateMaxReached,
   buildReport,
   isCoolingDown,
+  recordFeatured,
+  getPendingFeatured,
+  updateFeaturedMaxReached,
+  resolveFeatured,
+  buildFeaturedReport,
 };

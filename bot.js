@@ -255,6 +255,7 @@ bot.onText(/\/status/, async (msg) => {
         { text: '🔄 Sectors',         callback_data: 'show_sectors'    },
       ], [
         { text: '📈 Signal Report',   callback_data: 'show_report'    },
+        { text: '🌟 Featured Report', callback_data: 'show_freport_25' },
       ]],
     }
   );
@@ -286,6 +287,26 @@ bot.onText(/\/report/, async (msg) => {
   const uid = msg.chat.id;
   if (!guardOnboarded(uid)) return;
   await send(uid, sigHistory.buildReport(50), reportKeyboard(50));
+});
+
+// ─── /freport ─────────────────────────────────────────────────────────────────
+
+function featuredReportKeyboard(active) {
+  const opts = [25, 50, 0];
+  return {
+    inline_keyboard: [
+      opts.map(n => ({
+        text: n === active ? (n === 0 ? '• All' : `• Last ${n}`) : (n === 0 ? 'All' : `Last ${n}`),
+        callback_data: `show_freport_${n}`,
+      })),
+    ],
+  };
+}
+
+bot.onText(/\/freport/, async (msg) => {
+  const uid = msg.chat.id;
+  if (!guardOnboarded(uid)) return;
+  await send(uid, sigHistory.buildFeaturedReport(25), featuredReportKeyboard(25));
 });
 
 // ─── /watchlist ───────────────────────────────────────────────────────────────
@@ -500,6 +521,7 @@ bot.onText(/\/help/, async (msg) => {
     ` /status — open trades + portfolio\n` +
     ` /stats — win rate, P&L, coaching\n` +
     ` /report — signal history vs what actually happened\n` +
+    ` /freport — featured signals only (A+ grade, strong R:R)\n` +
     ` /track SYMBOL PRICE — manually track a trade\n` +
     ` /untrack SYMBOL — stop tracking\n` +
     ` /tracked — all open positions\n\n` +
@@ -743,6 +765,11 @@ bot.on('callback_query', async (query) => {
     if (data.startsWith('show_report_')) {
       const limit = parseInt(data.split('_')[2], 10);
       await send(uid, sigHistory.buildReport(limit), reportKeyboard(limit));
+      return;
+    }
+    if (data.startsWith('show_freport_')) {
+      const limit = parseInt(data.split('_')[2], 10);
+      await send(uid, sigHistory.buildFeaturedReport(limit), featuredReportKeyboard(limit));
       return;
     }
 
@@ -1005,13 +1032,14 @@ async function broadcastSignal(scannerResult) {
     }
 
     // Featured channel — only strongest signals, always delivered
-    if (CONFIG.FEATURED_CHANNEL && isFeaturedSignal(scannerResult, marketRegime)) {
+    if (CONFIG.FEATURED_CHANNEL && featured) {
       try {
         await bot.sendMessage(CONFIG.FEATURED_CHANNEL, buildFeaturedPost(scannerResult, extras), { parse_mode: 'Markdown' });
         console.log(`[Featured] Sent ${scannerResult.symbol} (score ${scannerResult.instGrade?.iScore})`);
       } catch (e) {
         console.error('[Featured]', e.response?.data?.description ?? e.message);
       }
+      sigHistory.recordFeatured(scannerResult);
     }
 
     for (const { userId, isWatched, alertType } of recipients) {
@@ -1435,6 +1463,23 @@ async function runPriceAlertChecker() {
 // marks it TP1_HIT / TP2_HIT / SL_HIT / EXPIRED automatically.
 
 async function resolveSignalOutcomes() {
+  // Resolve featured signals in parallel
+  for (const sig of sigHistory.getPendingFeatured()) {
+    try {
+      if (Date.now() - sig.timestamp > 7 * 24 * 60 * 60 * 1000) {
+        sigHistory.resolveFeatured(sig.symbol, 'EXPIRED', null);
+        continue;
+      }
+      const price = await getPrice(sig.symbol);
+      if (!price) continue;
+      sigHistory.updateFeaturedMaxReached(sig.symbol, price);
+      if      (sig.tp2 && price >= sig.tp2)                           sigHistory.resolveFeatured(sig.symbol, 'TP2_HIT', price);
+      else if (sig.tp1 && price >= sig.tp1 && sig.outcome !== 'TP1_HIT') sigHistory.resolveFeatured(sig.symbol, 'TP1_HIT', price);
+      else if (sig.sl  && price <= sig.sl)                            sigHistory.resolveFeatured(sig.symbol, 'SL_HIT',  price);
+      await sleep(300);
+    } catch (e) { console.error('[FeaturedResolver]', sig.symbol, e.message); }
+  }
+
   const pending = sigHistory.getPendingSignals();
   if (!pending.length) return;
 
