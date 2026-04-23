@@ -74,15 +74,34 @@ function adapt(raw) {
   const atrPct = raw.atrPct != null ? parseFloat(raw.atrPct) : null;
 
   // ── Volume ─────────────────────────────────────────────────────────────────
-  // volZ is an object {z, highAnomaly, medAnomaly, stealth}
-  const volZObj = typeof raw.volZ === 'object' ? raw.volZ : null;
-  const volZNum = volZObj ? parseFloat(volZObj.z ?? 0) : parseFloat(raw.volZ ?? raw.volZScore ?? 0);
-  const volRatio = parseFloat(raw.volRatio ?? raw.volumeRatio ?? raw.volMult ?? 1);
+  // volZ is an object {z, ratio, highAnomaly, medAnomaly, stealth}
+  const volZObj  = typeof raw.volZ === 'object' ? raw.volZ : null;
+  const volZNum  = volZObj ? parseFloat(volZObj.z ?? 0) : parseFloat(raw.volZ ?? raw.volZScore ?? 0);
+  // volRatio = actual multiplier vs average (e.g. 2.5 = 2.5× avg volume)
+  const volRatio = parseFloat(
+    raw.volRatio ?? raw.volumeRatio ?? raw.volMult ??
+    volZObj?.ratio ??   // scanner's volZ.ratio is the real volume multiplier
+    1
+  );
 
   // ── Order book ─────────────────────────────────────────────────────────────
-  const obRatio = parseFloat(raw.obRatio ?? raw.orderBookRatio ?? raw.bidAskRatio ?? 0);
+  // Regular signals: scanner exports ob = { bids, asks, imbalance, bwr, awr }
+  // Pre-pump signals: scanner exports obRatio as a string, bidDepthUSDT, askDepthUSDT
+  const obRaw   = raw.ob ?? raw.orderBook ?? null;
   const obBids  = raw.bidDepthUSDT ?? raw.obBids ?? 0;
   const obAsks  = raw.askDepthUSDT ?? raw.obAsks ?? 0;
+
+  // Compute ratio: bid USDT depth / ask USDT depth (regular signal uses imbalance → ratio)
+  // imbalance = bids/(bids+asks) so ratio = imbalance / (1 - imbalance)
+  let obRatio = parseFloat(raw.obRatio ?? raw.orderBookRatio ?? raw.bidAskRatio ?? 0);
+  if (!obRatio && obRaw?.imbalance != null) {
+    const imb = parseFloat(obRaw.imbalance);
+    obRatio = imb > 0 && imb < 1 ? +(imb / (1 - imb)).toFixed(2) : 1;
+  }
+  if (!obRatio && obBids && obAsks) {
+    obRatio = +(obBids / obAsks).toFixed(2);
+  }
+
   const bidDominance = obRatio > 0 ? Math.round((obRatio / (obRatio + 1)) * 100) : 0;
 
   // ── Absorption ─────────────────────────────────────────────────────────────
@@ -183,8 +202,8 @@ function adapt(raw) {
     },
 
     volZ: {
-      ratio       : volZNum,
-      z           : volZNum,
+      ratio       : volZObj?.ratio != null ? parseFloat(volZObj.ratio) : volRatio, // actual multiplier e.g. 2.5x
+      z           : volZNum,                                                        // z-score
       highAnomaly : volZObj?.highAnomaly ?? (volZNum >= 3),
       medAnomaly  : volZObj?.medAnomaly  ?? (volZNum >= 1.5 && volZNum < 3),
       stealth     : volZObj?.stealth     ?? (absorption >= 60 && volZNum < 1.0),
@@ -198,8 +217,9 @@ function adapt(raw) {
     },
 
     spring          : { spring: isSpring, score: raw.spring?.score ?? 0 },
-    fbCheck         : { isFake, brokeHigh },
+    fbCheck         : { isFake, brokeHigh, vwap: raw.fbCheck?.vwap ?? null },
     explosionReadiness: { score: Math.round(explosionScore) },
+    candleEnergy    : raw.candleEnergy ?? raw.compressionScore?.bars ?? null,
     expansion       : { expansionType, expansionTypeKey },
     signals,
 
