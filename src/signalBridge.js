@@ -465,8 +465,8 @@ function buildSignalAlert(r, userId, isWatched = false, extras = {}) {
   const vwapLine = buildVWAPLine(r, extras.vwap);
   const setup    = classifySetup(r);
   const setupLine = setup.timing
-    ? `⏱ *${setup.label}* — expect move in *${setup.timing}*  _(${setup.note})_`
-    : `${setup.label}  _(${setup.note})_`;
+    ? `⏱ ${setup.label} — est. ${setup.timing} · ${setup.note}`
+    : `${setup.label} · ${setup.note}`;
 
   // Session
   const session = r.session ?? r.instGrade?.session ?? '';
@@ -908,8 +908,8 @@ function buildExplainMessage(r, extras = {}) {
   // Setup type
   const setup     = classifySetup(r);
   const setupLine2 = setup.timing
-    ? `• Setup type: *${setup.label}* — expect move in *${setup.timing}* _(${setup.note})_`
-    : `• Setup type: ${setup.label} _(${setup.note})_`;
+    ? `• Setup type: ${setup.label} — est. ${setup.timing} · ${setup.note}`
+    : `• Setup type: ${setup.label} · ${setup.note}`;
 
   // Recommendation
   let recommend;
