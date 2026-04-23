@@ -36,6 +36,7 @@ const news       = require('./src/newsService');
 const sector     = require('./src/sectorMomentum');
 const { adapt }  = require('./src/scannerAdapter');
 const sigHistory = require('./src/signalHistory');
+const regime     = require('./src/marketRegime');
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN ?? process.env.BOT_TOKEN;
@@ -889,6 +890,12 @@ async function broadcastSignal(scannerResult) {
   try {
     sector.recordSignal(scannerResult.symbol, scannerResult.instGrade?.iScore ?? 50);
 
+    // Cooldown: skip if this coin hit SL within last 24h
+    if (sigHistory.isCoolingDown(scannerResult.symbol)) {
+      console.log(`[Broadcast] Skipped ${scannerResult.symbol} — 24h cooldown after SL hit`);
+      return;
+    }
+
     // Check for dangerous news before broadcasting
     const dangerCheck = await news.checkDangerousNews(scannerResult.symbol);
     if (dangerCheck.danger) {
@@ -897,14 +904,19 @@ async function broadcastSignal(scannerResult) {
     }
 
     // Fetch async extras once — shared across all recipients
-    const [newsSummary, rotationLine, vwap] = await Promise.all([
+    const [newsSummary, rotationLine, vwap, marketRegime] = await Promise.all([
       news.buildNewsSummary(scannerResult.symbol),
       Promise.resolve(sector.buildRotationLine(scannerResult.symbol)),
       getVWAP(scannerResult.symbol),
+      regime.getMarketRegime(),
     ]);
-    const extras = { newsSummary, rotationLine, vwap };
+    const regimeLine = regime.buildRegimeLine(marketRegime);
+    const extras = { newsSummary, rotationLine, vwap, regime: regimeLine };
     cacheSignal(scannerResult, extras);
-    sigHistory.recordSignal(scannerResult);
+
+    const recipients = bridge.getEligibleUsers(scannerResult);
+    const recipientIds = recipients.map(u => String(u.userId));
+    sigHistory.recordSignal(scannerResult, recipientIds);
 
     if (channelId) {
       try {
@@ -914,7 +926,6 @@ async function broadcastSignal(scannerResult) {
       }
     }
 
-    const recipients = bridge.getEligibleUsers(scannerResult);
     for (const { userId, isWatched, alertType } of recipients) {
       const alert = alertType === 'accumulation'
         ? bridge.buildAccumulationAlert(scannerResult, userId, isWatched, extras)
@@ -1356,10 +1367,13 @@ async function resolveSignalOutcomes() {
 
       if (sig.tp2 && price >= sig.tp2) {
         sigHistory.resolveSignal(sig.id, 'TP2_HIT', price);
+        await _sendDebrief(sig, 'TP2_HIT', price);
       } else if (sig.tp1 && price >= sig.tp1 && sig.outcome !== 'TP1_HIT') {
         sigHistory.resolveSignal(sig.id, 'TP1_HIT', price);
+        await _sendTP1Debrief(sig, price);
       } else if (sig.sl && price <= sig.sl) {
         sigHistory.resolveSignal(sig.id, 'SL_HIT', price);
+        await _sendDebrief(sig, 'SL_HIT', price);
       }
 
       await sleep(300); // rate-limit Binance calls
@@ -1368,6 +1382,123 @@ async function resolveSignalOutcomes() {
     }
   }
 }
+
+async function _sendTP1Debrief(sig, price) {
+  const pct       = ((price - sig.entry) / sig.entry * 100).toFixed(1);
+  const trailStop = bridge.fmtPrice(sig.entry * 1.005); // breakeven + 0.5% buffer
+  const tp2Line   = sig.tp2 ? `\`${bridge.fmtPrice(sig.tp2)}\`` : 'N/A';
+
+  const text = (
+    `🎯 *TP1 HIT — ${sig.symbol}*\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `Price reached TP1 at \`${bridge.fmtPrice(price)}\`  +${pct}%\n\n` +
+    `*What to do now:*\n` +
+    ` 1. Sell *50%* of your position\n` +
+    ` 2. Move stop loss to \`${trailStop}\` (breakeven+)\n` +
+    ` 3. Let the remaining 50% run to TP2: ${tp2Line}\n\n` +
+    `_Your remaining position is now risk-free._`
+  );
+
+  for (const uid of (sig.recipients ?? [])) {
+    try { await send(uid, text); } catch {}
+    await sleep(150);
+  }
+}
+
+async function _sendDebrief(sig, outcome, price) {
+  const holdTime  = sig.resolvedAt ? Math.round((sig.resolvedAt - sig.timestamp) / 60000) : null;
+  const timeLabel = holdTime
+    ? holdTime < 60 ? `${holdTime}m` : `${Math.round(holdTime/60)}h`
+    : '?';
+
+  let text;
+  if (outcome === 'TP2_HIT') {
+    const pct = ((price - sig.entry) / sig.entry * 100).toFixed(1);
+    text = (
+      `🏆 *FULL WIN — ${sig.symbol}*\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `TP2 hit at \`${bridge.fmtPrice(price)}\`  +${pct}%\n` +
+      `Hold time: ${timeLabel}\n\n` +
+      `_Grade ${sig.grade} signal delivered. Well done for holding._`
+    );
+  } else if (outcome === 'SL_HIT') {
+    const lossPct = sig.sl ? ((sig.entry - sig.sl) / sig.entry * 100).toFixed(1) : '?';
+    const peakPct = sig.maxReached && sig.maxReached > sig.entry
+      ? ((sig.maxReached - sig.entry) / sig.entry * 100).toFixed(1)
+      : null;
+    text = (
+      `🛑 *SL HIT — ${sig.symbol}*\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `Stop triggered at \`${bridge.fmtPrice(price)}\`  -${lossPct}%\n` +
+      (peakPct ? `Peak reached before stop: +${peakPct}%\n` : '') +
+      `Hold time: ${timeLabel}\n\n` +
+      `*What happened:* The setup didn't follow through. This is normal — no strategy wins every trade.\n\n` +
+      `_Next signal is waiting. Capital protected = you can trade again._`
+    );
+  } else {
+    return;
+  }
+
+  for (const uid of (sig.recipients ?? [])) {
+    try { await send(uid, text); } catch {}
+    await sleep(150);
+  }
+}
+
+// ─── MORNING BRIEFING ─────────────────────────────────────────────────────────
+
+async function sendMorningBriefing() {
+  try {
+    const mr = await regime.getMarketRegime();
+    if (!mr) return;
+
+    const profiles    = profile.getAllProfiles();
+    const onboarded   = Object.entries(profiles).filter(([, p]) => p.onboarded);
+    if (!onboarded.length) return;
+
+    const regimeLine = regime.buildRegimeLine(mr);
+    const advice = mr.regime === 'BULL'   ? 'Good day to trade. Take setups above B-grade.'
+      : mr.regime === 'BEAR'              ? 'Cautious day. Only A+ grade entries, tighter stops.'
+      : mr.regime === 'RANGING'           ? 'Range day. Take TP1, skip TP2, avoid moonshots.'
+      : 'Transitioning market. Wait for clear signals before entering.';
+
+    const text = (
+      `🌅 *Morning Market Briefing*\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `${regimeLine}\n\n` +
+      `*Today's approach:*\n` +
+      `${advice}\n\n` +
+      `BTC now: \`$${Number(mr.btcPrice).toLocaleString('en-US', { maximumFractionDigits: 0 })}\`  |  7d change: ${mr.weekChange >= 0 ? '+' : ''}${mr.weekChange}%\n\n` +
+      `_Signals will arrive when setups form. Stay patient._`
+    );
+
+    for (const [uid] of onboarded) {
+      try { await send(uid, text); } catch {}
+      await sleep(200);
+    }
+    console.log(`[Briefing] Sent to ${onboarded.length} users`);
+  } catch (e) {
+    console.error('[Briefing]', e.message);
+  }
+}
+
+// Schedule morning briefing at 09:00 UTC
+(function scheduleMorningBriefing() {
+  function msUntil9amUTC() {
+    const now = new Date();
+    const next9 = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 9, 0, 0));
+    if (next9 <= now) next9.setUTCDate(next9.getUTCDate() + 1);
+    return next9 - now;
+  }
+  function scheduleNext() {
+    setTimeout(async () => {
+      await sendMorningBriefing();
+      scheduleNext(); // reschedule for next day
+    }, msUntil9amUTC());
+  }
+  scheduleNext();
+  console.log(`[Briefing] Scheduled — next briefing in ${Math.round(msUntil9amUTC() / 60000)}m`);
+}());
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 

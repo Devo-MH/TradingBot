@@ -37,7 +37,7 @@ function save(data) {
 
 // ─── RECORD ──────────────────────────────────────────────────────────────────
 
-function recordSignal(r) {
+function recordSignal(r, recipientIds = []) {
   if (!r?.symbol || !r?.entry) return;
 
   const data = load();
@@ -66,6 +66,7 @@ function recordSignal(r) {
     exitPrice  : null,
     maxReached : r.entry,
     resolvedAt : null,
+    recipients : recipientIds,
   });
 
   // Trim to cap
@@ -208,6 +209,20 @@ function _fmt(v) {
   return n.toFixed(4);
 }
 
+// ─── COOLDOWN ─────────────────────────────────────────────────────────────────
+
+/**
+ * Returns true if the symbol hit SL within the last 24 hours.
+ * Used in broadcastSignal to suppress re-entry on a coin that just failed.
+ */
+function isCoolingDown(symbol) {
+  const data      = load();
+  const cutoff    = Date.now() - 24 * 60 * 60 * 1000;
+  return data.signals.some(
+    s => s.symbol === symbol && s.outcome === 'SL_HIT' && s.resolvedAt && s.resolvedAt > cutoff
+  );
+}
+
 // ─── EXPORTS ─────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -216,4 +231,5 @@ module.exports = {
   resolveSignal,
   updateMaxReached,
   buildReport,
+  isCoolingDown,
 };

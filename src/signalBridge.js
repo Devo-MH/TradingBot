@@ -18,6 +18,7 @@
 const { getAllProfiles, calcPositionSizes, shouldReceiveSignal, isUserActive } = require('./userProfile');
 const { getPortfolioSnapshot }                                                  = require('./tradeStore');
 const { getUsersWatchingSymbol }                                                = require('./watchlist');
+const { buildCorrelationWarning }                                               = require('./correlationCheck');
 
 // ─── GRADE MAPPING ────────────────────────────────────────────────────────────
 
@@ -468,6 +469,28 @@ function buildSignalAlert(r, userId, isWatched = false, extras = {}) {
     ? `⏱ ${setup.label} — est. ${setup.timing} · ${setup.note}`
     : `${setup.label} · ${setup.note}`;
 
+  // R:R ratio
+  const rrRatio = r.sl && r.tp1 && r.entry
+    ? ((r.tp1 - r.entry) / (r.entry - r.sl))
+    : null;
+  const rrLine = rrRatio != null
+    ? `📐 R:R 1:${rrRatio.toFixed(1)} · Risk ${((r.entry - r.sl) / r.entry * 100).toFixed(1)}% → Reward +${((r.tp1 - r.entry) / r.entry * 100).toFixed(0)}%`
+    : null;
+
+  // Entry zone (±0.3% or half ATR% if available)
+  const atrPct    = parseFloat(r.atrPct ?? r.instGrade?.atrPct ?? 0);
+  const zoneHalf  = atrPct > 0 ? r.entry * (atrPct / 200) : r.entry * 0.003;
+  const zoneLine  = r.entry
+    ? `📍 Entry zone: \`${fmtPrice(r.entry - zoneHalf)}\` – \`${fmtPrice(r.entry + zoneHalf)}\``
+    : null;
+
+  // Correlation warning
+  const snapshot2      = getPortfolioSnapshot(userId);
+  const correlationWarn = buildCorrelationWarning(r.symbol, snapshot2.openTrades);
+
+  // Market regime line from extras
+  const regimeLine = extras.regime ? `${extras.regime}` : null;
+
   // Session
   const session = r.session ?? r.instGrade?.session ?? '';
   const sessionEmoji = { EUROPE: '🌍', US: '🇺🇸', ASIA: '🌏' }[session] ?? '';
@@ -495,14 +518,18 @@ function buildSignalAlert(r, userId, isWatched = false, extras = {}) {
     vwapLine || null,
     cvdLine,
     setupLine,
+    regimeLine,
     ``,
+    zoneLine,
     r.sl && r.tp1
       ? `🎯  SL: \`${fmtPrice(r.sl)}\` *(${slPct})*  TP1: \`${fmtPrice(r.tp1)}\` *(${tp1Pct})*  TP2: \`${fmtPrice(r.tp2)}\` *(${tp2Pct})*  🌕 \`${fmtPrice(r.moonPrice)}\` *(${moonPct})*`
       : null,
+    rrLine,
     confirmLine || null,
     ``,
     extras.newsSummary   || null,
     extras.rotationLine  || null,
+    correlationWarn      || null,
     ``,
     capacity.allowed && sizes
       ? `💰 Size: *~$${sizes.recommended}*  (cons: $${sizes.conservative}  |  agg: $${sizes.aggressive})`
