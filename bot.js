@@ -988,7 +988,8 @@ async function broadcastSignal(scannerResult) {
       regime.getMarketRegime(),
     ]);
     const regimeLine = regime.buildRegimeLine(marketRegime);
-    const extras = { newsSummary, rotationLine, vwap, regime: regimeLine };
+    const featured   = isFeaturedSignal(scannerResult, marketRegime);
+    const extras = { newsSummary, rotationLine, vwap, regime: regimeLine, featured };
     cacheSignal(scannerResult, extras);
 
     const recipients = bridge.getEligibleUsers(scannerResult);

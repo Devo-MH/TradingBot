@@ -507,7 +507,12 @@ function buildSignalAlert(r, userId, isWatched = false, extras = {}) {
   const moonPct = r.moonPrice ? `+${((r.moonPrice - r.entry) / r.entry * 100).toFixed(0)}%` : '';
   const slPct   = r.sl   ? `-${((r.entry  - r.sl)  / r.entry * 100).toFixed(1)}%` : '';
 
+  const featuredBanner = extras.featured
+    ? `🌟 *FEATURED SIGNAL — passed all quality filters*\n━━━━━━━━━━━━━━━━━━━━━━\n`
+    : null;
+
   const text = [
+    featuredBanner,
     obWarn,
     `${verdictEmoji} *${classificationLabel(r.classification)} — ${r.symbol}*`,
     watchedFlag,
