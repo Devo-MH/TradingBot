@@ -19,7 +19,7 @@ const path = require('path');
 
 const DATA_FILE = path.join(process.env.DATA_DIR || path.join(__dirname, '..', 'data'), 'signal_history.json');
 const MAX_AGE_DAYS  = 7;
-const MAX_SIGNALS   = 300;
+const MAX_SIGNALS   = 1000;
 const DEDUPE_WINDOW = 60 * 60 * 1000; // 1h — don't double-record same symbol
 
 // ─── PERSISTENCE ─────────────────────────────────────────────────────────────
@@ -103,37 +103,40 @@ function updateMaxReached(id, price) {
 
 // ─── REPORT ──────────────────────────────────────────────────────────────────
 
-function buildReport(limit = 25) {
-  const data    = load();
-  const signals = data.signals.slice(-limit).reverse();
+function buildReport(limit = 50) {
+  const data       = load();
+  const allSignals = data.signals;
 
-  if (!signals.length) {
+  if (!allSignals.length) {
     return '📊 *Signal Report*\n\nNo signals recorded yet. The bot will start tracking from now.';
   }
 
-  // Stats
-  const resolved = signals.filter(s => ['TP1_HIT', 'TP2_HIT', 'SL_HIT'].includes(s.outcome));
-  const wins     = resolved.filter(s => s.outcome === 'TP1_HIT' || s.outcome === 'TP2_HIT');
-  const losses   = resolved.filter(s => s.outcome === 'SL_HIT');
-  const winRate  = resolved.length > 0 ? ((wins.length / resolved.length) * 100).toFixed(0) : '—';
+  // Stats calculated from ALL stored signals for accuracy
+  const allResolved = allSignals.filter(s => ['TP1_HIT', 'TP2_HIT', 'SL_HIT'].includes(s.outcome));
+  const allWins     = allResolved.filter(s => s.outcome === 'TP1_HIT' || s.outcome === 'TP2_HIT');
+  const allLosses   = allResolved.filter(s => s.outcome === 'SL_HIT');
+  const winRate     = allResolved.length > 0 ? ((allWins.length / allResolved.length) * 100).toFixed(0) : '—';
 
-  const avgWinPct = wins.length > 0
-    ? (wins.reduce((sum, s) => {
+  const avgWinPct = allWins.length > 0
+    ? (allWins.reduce((sum, s) => {
         const pct = s.exitPrice && s.entry ? ((s.exitPrice - s.entry) / s.entry * 100) : 0;
         return sum + pct;
-      }, 0) / wins.length).toFixed(1)
+      }, 0) / allWins.length).toFixed(1)
     : '—';
 
-  const avgLossPct = losses.length > 0
-    ? (losses.reduce((sum, s) => {
+  const avgLossPct = allLosses.length > 0
+    ? (allLosses.reduce((sum, s) => {
         const pct = s.exitPrice && s.entry ? ((s.exitPrice - s.entry) / s.entry * 100) : 0;
         return sum + pct;
-      }, 0) / losses.length).toFixed(1)
+      }, 0) / allLosses.length).toFixed(1)
     : '—';
+
+  // Display slice — most recent first
+  const display = (limit === 0 ? allSignals : allSignals.slice(-limit)).reverse();
 
   // Per-signal lines
-  const lines = signals.map(s => {
-    const age     = _ageLabel(s.timestamp);
+  const lines = display.map(s => {
+    const age      = _ageLabel(s.timestamp);
     const priceFmt = _fmt(s.entry);
 
     if (s.outcome === 'TP2_HIT') {
@@ -149,28 +152,32 @@ function buildReport(limit = 25) {
       return `❌ \`${s.symbol}\` @${priceFmt}  SL hit  ${pct}  _(${age})_`;
     }
     if (s.outcome === 'EXPIRED') {
-      const maxPct = s.maxReached && s.entry
-        ? `  peak: ${((s.maxReached - s.entry) / s.entry * 100).toFixed(1)}%`
-        : '';
-      return `⏰ \`${s.symbol}\` @${priceFmt}  Expired${maxPct}  _(${age})_`;
+      const peakPct = s.maxReached && s.entry
+        ? ((s.maxReached - s.entry) / s.entry * 100)
+        : 0;
+      const peakStr = peakPct >= 0.1 ? `  peak: +${peakPct.toFixed(1)}%` : '';
+      return `⏰ \`${s.symbol}\` @${priceFmt}  Expired${peakStr}  _(${age})_`;
     }
-    // PENDING — show live progress if maxReached available
-    const liveMove = s.maxReached && s.entry
-      ? ` (peak: ${((s.maxReached - s.entry) / s.entry * 100).toFixed(1)}%)`
-      : '';
-    return `⏳ \`${s.symbol}\` @${priceFmt}  Pending${liveMove}  _(${age})_`;
+    // PENDING — only show peak if resolver has run and moved price meaningfully
+    const peakPct = s.maxReached && s.entry
+      ? ((s.maxReached - s.entry) / s.entry * 100)
+      : 0;
+    const peakStr = peakPct >= 0.1 ? ` (peak: +${peakPct.toFixed(1)}%)` : '';
+    return `⏳ \`${s.symbol}\` @${priceFmt}  Pending${peakStr}  _(${age})_`;
   });
+
+  const displayLabel = limit === 0 ? 'All' : `Last ${display.length}`;
 
   return [
     `📊 *Signal Performance Report*`,
     `━━━━━━━━━━━━━━━━━━━━━━`,
-    `Resolved: *${resolved.length}* of ${signals.length}  |  Win rate: *${winRate}%*`,
+    `Total signals: *${allSignals.length}*  |  Resolved: *${allResolved.length}*`,
+    `Win rate: *${winRate}%*  (${allWins.length}W / ${allLosses.length}L)`,
     `Avg win: *+${avgWinPct}%*  |  Avg loss: *${avgLossPct}%*`,
-    `Wins: ${wins.length} ✅  |  Losses: ${losses.length} ❌  |  Pending: ${signals.length - resolved.length} ⏳`,
     `━━━━━━━━━━━━━━━━━━━━━━`,
     ...lines,
     ``,
-    `_Last ${signals.length} signals. Bot tracks outcomes automatically._`,
+    `_${displayLabel} signals shown. Stats from all ${allSignals.length} recorded._`,
   ].join('\n');
 }
 

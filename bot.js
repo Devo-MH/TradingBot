@@ -268,10 +268,22 @@ bot.onText(/\/stats/, async (msg) => {
 
 // ─── /report ──────────────────────────────────────────────────────────────────
 
+function reportKeyboard(active) {
+  const opts = [50, 100, 0]; // 0 = all
+  return {
+    inline_keyboard: [
+      opts.map(n => ({
+        text: n === active ? (n === 0 ? '• All' : `• Last ${n}`) : (n === 0 ? 'All' : `Last ${n}`),
+        callback_data: `show_report_${n}`,
+      })),
+    ],
+  };
+}
+
 bot.onText(/\/report/, async (msg) => {
   const uid = msg.chat.id;
   if (!guardOnboarded(uid)) return;
-  await send(uid, sigHistory.buildReport(25));
+  await send(uid, sigHistory.buildReport(50), reportKeyboard(50));
 });
 
 // ─── /watchlist ───────────────────────────────────────────────────────────────
@@ -717,7 +729,12 @@ bot.on('callback_query', async (query) => {
     if (data === 'show_watchlist') { await send(uid, watchlist.buildWatchlistSummary(uid)); return; }
     if (data === 'show_heat')      { await send(uid, risk.buildHeatSummary(uid));           return; }
     if (data === 'show_sectors')   { await send(uid, sector.buildSectorCard());             return; }
-    if (data === 'show_report')    { await send(uid, sigHistory.buildReport(25));           return; }
+    if (data === 'show_report')    { await send(uid, sigHistory.buildReport(50), reportKeyboard(50)); return; }
+    if (data.startsWith('show_report_')) {
+      const limit = parseInt(data.split('_')[2], 10);
+      await send(uid, sigHistory.buildReport(limit), reportKeyboard(limit));
+      return;
+    }
 
     // ── PROFILE EDITS ─────────────────────────────────────────────────────────
     if (data === 'profile_edit_risk') {
